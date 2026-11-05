@@ -31,6 +31,45 @@ const CRITICAL_MARKERS = [
 ];
 /** 修复侧标记：道歉、保证、回来——但按依恋类型打折 */
 const REPAIR_MARKERS = ['对不起', '我错了', '我回来了', '一直在', '不会走', '答应你', '保证', '别怕', '我在'];
+/**
+ * 生活转折：换环境会改开放性与尽责性，而不是只改神经质。
+ * 没有这一路，"人生大事"和"吵架"对人格的影响就没有区别。
+ */
+const LIFE_MARKERS = [
+  '搬家', '搬去', '搬走', '换工作', '辞职', '入职', '出国', '留学', '毕业',
+  '上大学', '考研', '住院', '手术', '生病了', '确诊', '结婚', '怀孕', '生孩子', '去世',
+];
+/** 成就/挫败：主要推动尽责性，其次外倾 */
+const ACHIEVE_POS = ['升职', '加薪', '考上', '录取', '拿到 offer', '通过了', '拿了第一', '成功'];
+const ACHIEVE_NEG = ['失败', '搞砸', '被拒', '落榜', '挂科', '被裁', '失业', '没通过'];
+
+type Channel = 'relation' | 'life' | 'achievement' | 'repair' | 'none';
+
+/**
+ * 方向推断：情绪词典只有 22 条，"分手 / 背叛"这类词不进词典，
+ * 所以极性为 0 时按通道语义兜底，避免把"分手"当成好消息。
+ */
+function directionOf(text: string, channel: Channel, l5: L5State, polarity: number): number {
+  if (Math.abs(polarity) >= 0.05) return polarity > 0 ? 1 : -1;
+  if (channel === 'relation') return -1;
+  if (channel === 'achievement') {
+    return countMarkers(text, ACHIEVE_NEG) > countMarkers(text, ACHIEVE_POS) ? -1 : 1;
+  }
+  if (channel === 'life') return l5.emotion.pleasure >= 0 ? 1 : -1;
+  return polarity >= 0 ? 1 : -1;
+}
+
+function classifyChannel(text: string): { channel: Channel; hits: number } {
+  const life = countMarkers(text, LIFE_MARKERS);
+  const achieve = countMarkers(text, ACHIEVE_POS) + countMarkers(text, ACHIEVE_NEG);
+  const relation = countMarkers(text, CRITICAL_MARKERS);
+  const repair = countMarkers(text, REPAIR_MARKERS);
+  if (life > 0) return { channel: 'life', hits: life };
+  if (relation > 0) return { channel: 'relation', hits: relation };
+  if (achieve > 0) return { channel: 'achievement', hits: achieve };
+  if (repair > 0) return { channel: 'repair', hits: repair };
+  return { channel: 'none', hits: 0 };
+}
 
 const EVIDENCE_SOFT_CAP = 200;
 
@@ -199,15 +238,15 @@ export function scoreImpact(
   thresholds: { cumulative: number; critical: number } = { cumulative: 0.3, critical: 0.6 },
 ): { impact: number; kind: ImpactKind; repair: boolean } {
   const polarity = sentimentPolarity(text);
-  const critical = countMarkers(text, CRITICAL_MARKERS);
-  const repair = countMarkers(text, REPAIR_MARKERS) > 0 && polarity >= 0;
+  const { channel, hits } = classifyChannel(text);
+  const repair = channel === 'repair' && polarity >= 0;
 
   const strength = Math.abs(polarity) * 0.5
     + Math.abs(l5.emotion.pleasure) * 0.3
     + Math.max(0, l5.emotion.arousal) * 0.2;
 
   let impact = strength * 0.5;
-  if (critical > 0) impact += 0.3 + 0.1 * (critical - 1);
+  if (channel !== 'none' && channel !== 'repair') impact += 0.3 + 0.1 * (hits - 1);
   if (repair) impact += 0.25;
   impact = clamp01(impact);
 
@@ -237,7 +276,8 @@ export function applyPersonalitySignal(
   if (kind === 'routine') return { ...empty, kind, impact };
 
   const polarity = sentimentPolarity(input.text);
-  const direction = polarity >= 0 ? 1 : -1;
+  const channel = classifyChannel(input.text).channel;
+  const direction = directionOf(input.text, channel, input.l5, polarity);
   const persona = store.loadPersona();
   const l1 = persona.l1;
   const l2 = persona.l2;
@@ -294,11 +334,16 @@ export function applyPersonalitySignal(
     return delta;
   };
 
-  // 负面语气把神经质推高、外向与宜人压低；正面反之
-  const nDelta = drift('neuroticism', -0.6);
-  const eDelta = drift('extraversion', 0.3);
-  const aDelta = drift('agreeableness', 0.2);
-  const l1Changed = nDelta !== 0 || eDelta !== 0 || aDelta !== 0;
+  // 不同通道推动不同维度：关系 → N/E/A；生活转折 → O/C；成就挫败 → C/E/N
+  const plan: Partial<Record<keyof BigFive, number>> = channel === 'life'
+    ? { openness: 0.3, conscientiousness: 0.15, neuroticism: -0.2 }
+    : channel === 'achievement'
+      ? { conscientiousness: 0.35, extraversion: 0.2, neuroticism: -0.15 }
+      : { neuroticism: -0.6, extraversion: 0.3, agreeableness: 0.2 };
+  let l1Changed = false;
+  for (const [key, weight] of Object.entries(plan) as [keyof BigFive, number][]) {
+    if (drift(key, weight) !== 0) l1Changed = true;
+  }
   if (l1Changed) {
     l1.plasticity = round3(plasticity);
     l1.updatedAt = now;

@@ -87,8 +87,39 @@ function l3Group(current, base) {
         const baseStrategy = base.copingStrategies.find((item) => item.id === strategy.id);
         params.push(param(`coping.${strategy.id}.weight`, `应对 · ${strategy.trigger} 权重`, strategy.weight, baseStrategy?.weight), param(`coping.${strategy.id}.response`, `应对 · ${strategy.trigger}`, strategy.response));
     }
+    // 自我叙事三轴：只给数值，不翻译成"她是 X 型"——类型判断留给用户自己推
+    const narrative = current.narrative;
+    if (narrative) {
+        params.push(param('narrative.worldSafe', '叙事 · 世界安全', narrative.worldSafe, base.narrative?.worldSafe), param('narrative.othersReliable', '叙事 · 他人可靠', narrative.othersReliable, base.narrative?.othersReliable), param('narrative.selfWorth', '叙事 · 我值得被爱', narrative.selfWorth, base.narrative?.selfWorth));
+    }
     params.push(param('updatedAt', '更新时间', current.updatedAt));
     return { id: 'L3', title: 'L3 认知应对', subtitle: '压力下的策略与善恶观', params };
+}
+/**
+ * 人格证据：把"哪句话推动了哪一维"摊开给人看。
+ * 这里故意不输出依恋类型、极端标记之类的结论，只列事实（时间 / 维度 / 幅度 / 原话）。
+ */
+function evidenceGroup(current) {
+    const evidence = [...(current.evidence ?? [])].sort((a, b) => Date.parse(b.at) - Date.parse(a.at)).slice(0, 12);
+    if (evidence.length === 0)
+        return null;
+    const params = evidence.map((item, index) => {
+        const sign = item.delta > 0 ? '+' : '';
+        const when = item.at.slice(5, 16).replace('T', ' ');
+        return {
+            key: `evidence.${index}`,
+            label: `${when} · ${item.layer}/${item.dimension}`,
+            value: `${sign}${item.delta.toFixed(3)} ｜ ${item.quote || '（无原文）'}`,
+            kind: 'text',
+            note: `${item.impactKind} · 冲击 ${item.impact.toFixed(2)}`,
+        };
+    });
+    return {
+        id: 'evidence',
+        title: '人格证据',
+        subtitle: '只列事实：哪几句推动了哪一维，结论自己推',
+        params,
+    };
 }
 function l4Group(current, base) {
     const params = [];
@@ -266,6 +297,7 @@ export function buildStarPanels(store, now, counts) {
             l2Group(persona.l2, DEFAULT_L2),
             l3Group(persona.l3, DEFAULT_L3),
             l4Group(persona.l4, DEFAULT_L4),
+            ...(evidenceGroup(persona.l3) ? [evidenceGroup(persona.l3)] : []),
         ],
         runtime: [...runtimeGroups(store, now), programMemoryGroup(store), storageGroup(store, counts)],
         evolution: evolutionEntries(store),

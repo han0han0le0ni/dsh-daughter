@@ -124,6 +124,39 @@ test('日常对话不写人格，关键事件才推进并留证据', () => {
   rmSync(root, { recursive: true, force: true });
 });
 
+/* ------------------------------- 通道分化 ------------------------------- */
+
+test('通道分化：生活转折推开放性/尽责性，成就推尽责性，关系推动情绪三维', () => {
+  const config = makeConfig();
+  const base = createInitialL1('channel-test', 7);
+  const anchor = base.innate!;
+
+  const run = (text: string, l5 = makeL5(0.1, 0.2)) => {
+    const root = makeRoot();
+    const store = new Store(root, 'channel-test', 7, undefined, { lock: false });
+    store.savePersonaLayer('l1', structuredClone(base));
+    const result = applyPersonalitySignal(store, config, {
+      text,
+      eventId: nextId(),
+      l5,
+      now: '2026-11-05T10:00:00.000Z',
+    });
+    const l1 = store.loadPersona().l1;
+    store.close();
+    rmSync(root, { recursive: true, force: true });
+    return { result, l1 };
+  };
+
+  const life = run('下个月我要搬去上海工作了');
+  assert.notEqual(life.l1.bigFive.openness, anchor.openness, '生活转折应推动开放性');
+
+  const achieve = run('我升职了，终于拿到 offer');
+  assert.notEqual(achieve.l1.bigFive.conscientiousness, anchor.conscientiousness, '成就应推动尽责性');
+
+  const relation = run('我们分手吧，我再也不回来了', makeL5(-0.7, 0.6));
+  assert.ok(relation.l1.bigFive.neuroticism > anchor.neuroticism, '负向关系事件应抬高神经质');
+});
+
 /* ------------------------------- 漂移上限 ------------------------------- */
 
 test('五维漂移不超过出生锚点 ±drift_cap', () => {
@@ -172,6 +205,37 @@ test('修复按依恋类型打折：焦虑型同样的道歉改得更少', () =>
   const anxious = repair('anxious');
   // 焦虑型更难被安慰：同样的道歉，焦虑下降更少（值更高）
   assert.ok(anxious > secure, `焦虑型 ${anxious} 应高于安全型 ${secure}`);
+  rmSync(root, { recursive: true, force: true });
+});
+
+/* ------------------------------- 面板不剧透 ------------------------------- */
+
+test('面板只给事实：有证据链与叙事数值，但不输出依恋类型标签', async () => {
+  const { buildStarPanels } = await import('../src/runtime/panels.js');
+  const root = makeRoot();
+  const store = new Store(root, 'panel-test', 42, undefined, { lock: false });
+  const config = makeConfig();
+
+  applyPersonalitySignal(store, config, {
+    text: '我们分手吧，我再也不回来了',
+    eventId: nextId(),
+    l5: makeL5(-0.7, 0.6),
+    now: '2026-11-05T10:00:00.000Z',
+  });
+
+  const panels = buildStarPanels(store, '2026-11-05T11:00:00.000Z', { nodes: 0, edges: 0, galaxies: 0 });
+  const evidence = panels.persona.find((group) => group.id === 'evidence');
+  assert.ok(evidence, '应有人格证据分组');
+  assert.ok((evidence!.params[0]!.value as string).includes('｜'), '每条证据应带原话');
+
+  const l3 = panels.persona.find((group) => group.id === 'L3');
+  assert.ok(l3?.params.some((item) => item.key === 'narrative.othersReliable'), '应展示叙事数值');
+
+  const serialized = JSON.stringify(panels.persona);
+  for (const label of ['anxious', 'avoidant', 'disorganized', 'attachmentType']) {
+    assert.equal(serialized.includes(label), false, `面板不应泄露类型标签：${label}`);
+  }
+  store.close();
   rmSync(root, { recursive: true, force: true });
 });
 
