@@ -1,0 +1,4 @@
+- insert:
+    - id: dsh-daughter
+      name: 'dsh-daughter'
+      config: {}

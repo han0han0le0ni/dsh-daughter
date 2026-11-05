@@ -1,0 +1,130 @@
+# dsh-daughter 配置（对应设计文档第 11 节）
+version: 1
+character_id: daughter-default
+
+seed: 42
+random_surprise_enabled: true
+
+retrieval:
+  top_k: 5
+  half_life_days: 7
+  surprise_eta: 0.05
+  exclude_archived: true
+  max_candidates: 1000
+  score_weights:
+    semantic: 0.42
+    recency: 0.22
+    weight: 0.16
+    emotion_match: 0.10
+    link_proximity: 0.10
+  min_score: 0.12
+  # 命中事件若在全文层有更完整记录，就在摘要行后补一句摘录（§4.4）
+  expand_fulltext: true
+  fulltext_excerpt_chars: 120
+
+association:
+  max_depth: 2
+  max_injected: 2
+  hop_decay: 0.6
+
+skills:
+  max_main: 1
+  max_associated: 2
+  maturity_threshold_automate: 0.7
+  min_success_for_freeze: 5
+  min_main_score: 0.25
+  min_associated_score: 0.15
+  # 一轮里至少用到几个工具，才把这次工具序列沉淀成技能草稿（§9.1 draft）
+  min_steps_to_learn: 2
+
+reflex:
+  enabled: true
+  max_match_ms: 5
+  # 命中即跳过模型调用（G4）。注意：宿主 reject 会丢弃该条用户消息，
+  # 聊天记录里这条消息和回复都不会留下，只在桌宠气泡里可见。
+  short_circuit: false
+
+budget:
+  max_total_tokens: 3000
+  block_caps:
+    persona: 300
+    state_hint: 150
+    event_digest: 1400
+    skill_digest: 500
+    association: 300
+    constraint: 120
+
+safety:
+  enabled: true
+  diagnosis_labels_forbidden: true
+  thresholds:
+    stress_level1: 0.7
+    safety_level2: 0.35
+    fatigue_level2: 0.8
+    overdraft_level3: 0.8
+  hysteresis: 0.1
+  level1_min_duration_min: 30
+
+storage:
+  scope: character          # 仅支持 character；其它取值会告警并按角色级运行
+  shared_across_sessions: true
+  shared_across_workspaces: true
+  data_root: .
+  backend: sqlite
+  # true = 人格/技能/资产/L5/日志写入走文件锁 + 原子写（§5.3）；false 会退化为无锁写并告警
+  single_writer: true
+
+# 认知滤网：写入门控 / 习惯化 / 认知屏蔽 / 忘却（§8.5）
+filter:
+  enabled: true
+  # 来源可信度：同时用于写入门控与检索降权（真人对话恒为 1，永远不会因显著低被丢弃）
+  source_weights:
+    chat: 1.0
+    qq: 1.0
+    douyin_dm: 1.0
+    game: 0.9
+    minecraft: 0.9
+    douyin_content: 0.85
+    android: 0.85
+    system: 0.4
+  # 认知屏蔽：命中即不入库，只记统计
+  shield:
+    sources: []          # 例如 [system] 直接不收系统事件
+    keywords: []         # 例如 [密码, token, 密钥]
+    patterns: []         # 正则，例如 ["^窗口标题"]
+  # 习惯化：同源同题（数字归一化后）在窗口内重复，只累加计数不新增条目
+  habituation:
+    window_minutes: 30
+    max_repeat: 3
+  salience:
+    drop_below: 0.2      # 显著性低于此值且来源可信度 ≤0.5 时直接丢弃（0.12 时"前台切换"这类系统事件会漏进来）
+  # 忘却：低显著性 + 从未被想起 + 长期闲置 → 归档（不物理删除）
+  forget:
+    enabled: true
+    idle_days: 30
+    min_salience: 0.2
+
+decay:
+  weight_decay_rate: 0.02
+  recall_boost: 0.05
+  archive_threshold: 0.15
+  archive_idle_days: 90
+
+evolution:
+  l1_max_delta_per_write: 0.02
+  min_turns_between_writes: 20
+  log_retention_days: 365
+
+desktop:
+  enabled: true
+  bridge_url: http://127.0.0.1:47614
+
+# 桌宠联动（可选）：任何一项关掉/缺失，插件行为都与"没有桌宠"一致
+vpet:
+  enabled: true
+  body_link:
+    enabled: true          # 桌宠体力/心情 → L5 疲劳/压力，只抬升不写回人格
+    stale_ms: 300000       # 5 分钟没有新心跳视为失效，疲劳/压力自然回落
+    fatigue_weight: 0.5    # 体力越低，疲劳抬升越多
+    stress_weight: 0.3     # 心情越低，压力抬升越多
+    max_influence: 0.6     # 外部信号最多推到 0.6，留余量给对话

@@ -1,0 +1,18 @@
+# 依赖与构建产物
+node_modules/
+dist/
+*.tsbuildinfo
+
+# 运行时数据：这里存的是真实对话记忆、人格状态与会话快照，不入库
+brain/
+archive/
+logs/
+star_map/
+
+# 文档截图可能包含个人界面内容，默认不入库（需要时用 -f 单独加）
+docs/screenshots/
+
+# 杂项
+*.log
+.DS_Store
+Thumbs.db

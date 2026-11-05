@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <AssemblyName>DshDaughter</AssemblyName>
+    <RootNamespace>DshDaughter</RootNamespace>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <UseWPF>true</UseWPF>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <VPetDir Condition="'$(VPetDir)' == ''">E:\SteamLibrary\steamapps\common\VPet</VPetDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="VPet-Simulator.Windows.Interface">
+      <HintPath>$(VPetDir)\VPet-Simulator.Windows.Interface.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="VPet-Simulator.Core">
+      <HintPath>$(VPetDir)\VPet-Simulator.Core.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="LinePutScript">
+      <HintPath>$(VPetDir)\LinePutScript.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Panuon.WPF.UI">
+      <HintPath>$(VPetDir)\Panuon.WPF.UI.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="HKW.WPF">
+      <HintPath>$(VPetDir)\HKW.WPF.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+</Project>
