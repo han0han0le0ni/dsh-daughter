@@ -1048,7 +1048,7 @@ vpet:
 | Minecraft（有权限） | RCON | `dsh-rcon` | 直接发命令，异步反馈作为事件 |
 | Minecraft（无权限） | mineflayer | `dsh-minecraft-agent` | 平权 AI 玩家，聊天与行动 |
 | 单机游戏（PvZ 等） | MCP 游戏框架 / 桌面控制 | `@forgeax/dsh-game`、`dsh-work-components`、`godot-bridge` | 封装为工具，固化为一键资产包 |
-| 桌宠 / 虚拟形象 | 插件桥 + HTTP 轮询（1s） | 本仓库 `connectors/vpet`、`connectors/pet-shell` | MOD 带游标轮询 `/vpet/events?since=<seq>`，处理完 `POST /vpet/events/ack`；`/vpet/status` 汇总队列与在线状态，`/vpet/heartbeat` 由 `bridge.mjs` 上报存档心跳；`/vpet/control` + `vpet_control` 工具支持 DSH 接管任意 GraphType 动画与窗口位移；每轮用户消息后按 PAD/压力/疲劳下发情绪动作（joy→`Touch_Head`、low→`Say`、tired→`Sleep`，带节流）；`motion.play` 已消费。另提供 `connectors/pet-shell` 独立壳（WPF）：不启动游戏本体，直接读 VPet 素材目录的 PNG 序列帧播放，同样轮询上述端点；壳与 MOD 共用同一 ack 游标，**只能二选一运行** |
+| 桌宠：**VPet-Simulator**（虚拟桌宠模拟器，Steam 版，实测 11074） | 插件桥 + HTTP 轮询（1s，端口 47612） | 本仓库 `connectors/vpet`：自建 C# 代码 MOD **`DshDaughter`**（`mod\DshDaughter\info.lps` + `plugin\DshDaughter.dll`，不改游戏本体）；`connectors/pet-shell`：独立 WPF 壳，读 `mod\0000_core\pet\vup` 素材 | MOD 带游标轮询 `/vpet/events?since=<seq>`，处理完 `POST /vpet/events/ack`；`/vpet/status` 汇总队列与在线状态，`/vpet/heartbeat` 由 `bridge.mjs` 上报存档心跳；`/vpet/control` + `vpet_control` 工具支持 DSH 接管任意 GraphType 动画与窗口位移；每轮用户消息后按 PAD/压力/疲劳下发情绪动作（joy→`Touch_Head`、low→`Say`、tired→`Sleep`，带节流）；`motion.play` 已消费。另提供 `connectors/pet-shell` 独立壳（WPF）：不启动游戏本体，直接读 VPet 素材目录的 PNG 序列帧播放，同样轮询上述端点；壳与 MOD 共用同一 ack 游标，**只能二选一运行** |
 | 手机控制 | ADB / 工具调用 | `dsh-plugin-android-use` | 技能编排打开应用、点击、输入、定时 |
 | 电脑桌面 | PowerShell + ffmpeg | 本仓库 `connectors/desktop` | `/windows`、`/foreground`、`/media` 状态；`/screenshot`、`/frames`、`/stream` 画面；前台切换写 `system` 事件；`/stream` 默认 1280 宽/q7，本机实测约 28 fps、3.4 MB/s；`/frames` 走 JPEG 抽帧约 0.15 MB/s；`desktop_observe` 工具按需取一帧并保存为宿主附件送入模型 |
 
