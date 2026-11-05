@@ -10,18 +10,30 @@ export interface PadState {
     /** -1..1 */
     dominance: number;
 }
+export interface BigFive {
+    openness: Unit;
+    conscientiousness: Unit;
+    extraversion: Unit;
+    agreeableness: Unit;
+    neuroticism: Unit;
+}
+/** 依恋底色：出生只抽前三种，混乱型只能由经历演化出来 */
+export type AttachmentType = 'secure' | 'anxious' | 'avoidant' | 'disorganized';
+/** 影响人格的"冲击等级"：日常不动人格，关键事件才大步推进 */
+export type ImpactKind = 'routine' | 'cumulative' | 'critical' | 'phase';
 export interface L1Baseline {
-    bigFive: {
-        openness: Unit;
-        conscientiousness: Unit;
-        extraversion: Unit;
-        agreeableness: Unit;
-        neuroticism: Unit;
-    };
+    bigFive: BigFive;
+    /**
+     * 先天段锚点：出生时抽定，之后不再改写。
+     * 五维只能在这组锚点的 ±personality.drift_cap 内漂移，既保证"人还是那个人"，又留出极端空间。
+     */
+    innate?: BigFive;
     temperament: 'slow_warmup' | 'eager' | 'steady' | 'guarded';
     moodBaseline: PadState;
     noveltySeeking: Unit;
     plasticityBase: Unit;
+    /** 当前可塑性：随经历衰减，极端后减半；缺省按 1 - plasticityBase 计算 */
+    plasticity?: Unit;
     updatedAt: ISOTime;
 }
 export interface L2Relationship {
@@ -31,7 +43,34 @@ export interface L2Relationship {
     trustBaseline: Unit;
     relationshipStage: 'stranger' | 'acquaintance' | 'familiar' | 'close' | 'dependent';
     relationshipDepth: Unit;
+    /** 依恋底色，由焦虑/回避两维推导；混乱型只能靠"靠近—伤害"循环演化 */
+    attachmentType?: AttachmentType;
     updatedAt: ISOTime;
+}
+/** 自我叙事三轴：不是结论标签，只作为后续事件的解读滤镜 */
+export interface SelfNarrative {
+    /** 世界是善意的还是危险的 */
+    worldSafe: Unit;
+    /** 亲近的人会不会离开 */
+    othersReliable: Unit;
+    /** 我值不值得被爱 */
+    selfWorth: Unit;
+    /** 曾经跨过锁定阈值的轴（只记录事实，不对外当标签用） */
+    lockedAxes: string[];
+    updatedAt: ISOTime;
+}
+/** 一条人格证据：面板只展示事实，不下"你现在是 X 型"的结论 */
+export interface PersonalityEvidence {
+    id: string;
+    at: ISOTime;
+    eventId: string;
+    layer: 'L1' | 'L2' | 'L3';
+    dimension: string;
+    delta: number;
+    impactKind: ImpactKind;
+    impact: number;
+    /** 当时的原话片段，供用户自己判断 */
+    quote: string;
 }
 export interface CopingStrategy {
     id: string;
@@ -55,6 +94,10 @@ export interface L3Cognition {
     defenseMaturity: Unit;
     copingStrategies: CopingStrategy[];
     moral: MoralOutlook;
+    /** 自我叙事三轴（缺省时按中性值补齐） */
+    narrative?: SelfNarrative;
+    /** 人格证据链：只存事实，最多保留最近若干条 */
+    evidence?: PersonalityEvidence[];
     updatedAt: ISOTime;
 }
 export interface SubPersona {
@@ -500,6 +543,35 @@ export interface DaughterConfig {
         l1_max_delta_per_write: number;
         min_turns_between_writes: number;
         log_retention_days: number;
+    };
+    /**
+     * 性格演化：写实为基（日常不动人格），关键事件才能把人推到极端。
+     * 五维只能在「出生锚点 ± drift_cap」内移动；混乱型只能演化、不能出生。
+     */
+    personality: {
+        enabled: boolean;
+        drift_cap: number;
+        critical_threshold: number;
+        cumulative_threshold: number;
+        critical_step: number;
+        cumulative_step: number;
+        same_direction_bonus_after: number;
+        /** 修复效率乘数（按依恋类型），越小越难修 */
+        repair: {
+            secure: number;
+            anxious: number;
+            avoidant: number;
+            disorganized: number;
+        };
+        initial: {
+            ranges: Record<keyof BigFive, [number, number]>;
+            attachment_priors: {
+                secure: number;
+                anxious: number;
+                avoidant: number;
+            };
+        };
+        evidence_cap: number;
     };
     desktop: {
         enabled: boolean;

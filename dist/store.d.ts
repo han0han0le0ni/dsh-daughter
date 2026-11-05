@@ -1,3 +1,4 @@
+import type { InitialPersonalityInput } from './runtime/personality.js';
 import type { Logger } from './util.js';
 import type { AssetPackage, BodySignal, EvolutionLogEntry, EventRecord, L1Baseline, L2Relationship, L3Cognition, L4Contextual, L5State, PersonaBundle, ReflexRule, SafetyState, SkillCard } from './types.js';
 /** 出厂人格基线：星图面板用它算“相对出厂值的偏移”，只读，不参与写回 */
@@ -8,6 +9,8 @@ export declare const DEFAULT_L4: L4Contextual;
 export interface StoreOptions {
     /** §5.3 单写者：false 时退化为无锁写，仅用于确认无并发写者的场景 */
     lock?: boolean;
+    /** 出生人格抽样区间与依恋先验（只影响新建角色，已有存档不动） */
+    personality?: InitialPersonalityInput;
 }
 export declare class Store {
     readonly characterId: string;
@@ -15,6 +18,8 @@ export declare class Store {
     private db;
     private logger;
     private rand;
+    private readonly seed;
+    private readonly initialPersonality?;
     private ftsAvailable;
     /** 最近一次 FTS 检索的失败原因；null 表示正常，供 index 计入降级指标 */
     lastFtsError: string | null;

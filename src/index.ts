@@ -47,6 +47,7 @@ import {
   matchReflex,
   WORKING_STYLE,
 } from './runtime/content.js';
+import { applyPersonalitySignal } from './runtime/personality.js';
 import {
   applyPersonaDrift,
   buildPersonProfiles,
@@ -356,6 +357,15 @@ class Daughter implements DaughterPlugin {
 
     const drift = applyPersonaDrift(store, this.config, persona, sentimentOf(userText), now);
     if (drift.changed && drift.evolutionId) evolutionIds.push(drift.evolutionId);
+
+    // 性格演化：只有「累积 / 关键」事件才动 L1–L3，日常闲聊交给 L5（写实口径）
+    const signal = applyPersonalitySignal(store, this.config, {
+      text: userText,
+      eventId: ingested.eventId,
+      l5,
+      now,
+    });
+    if (signal.changed) evolutionIds.push(...signal.evolutionIds);
 
     const label = this.config.safety.diagnosis_labels_forbidden ? containsDiagnosisLabel(assistantText) : null;
     if (label) {
@@ -736,6 +746,8 @@ class Daughter implements DaughterPlugin {
     if (!store) {
       store = new Store(this.dataRoot, characterId, this.config.seed, this.logger, {
         lock: this.config.storage.single_writer,
+        // 出生人格：抽样区间与依恋先验只在新建角色时生效
+        personality: this.config.personality?.initial,
       });
       this.stores.set(characterId, store);
     }

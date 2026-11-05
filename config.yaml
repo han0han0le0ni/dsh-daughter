@@ -129,6 +129,35 @@ evolution:
   min_turns_between_writes: 20
   log_retention_days: 365
 
+# 性格演化：写实为基——日常闲聊不动人格，只有累积/关键事件才推动
+personality:
+  enabled: true
+  drift_cap: 0.6                # 五维相对出生锚点的最大漂移量（±）
+  critical_threshold: 0.6       # 冲击度 ≥ 此值算关键事件（一次性大幅推进）
+  cumulative_threshold: 0.3     # 冲击度 ≥ 此值算累积经历（小幅推进）
+  critical_step: 0.12
+  cumulative_step: 0.02
+  same_direction_bonus_after: 3 # 同向经历每攒够几次，额外推一把
+  # 修复效率乘数（按依恋底色）：越小越难修；伤害侧按 2 - 该值放大
+  repair:
+    secure: 1.0
+    anxious: 0.34
+    avoidant: 0.25
+    disorganized: 0.2
+  # 出生抽样：区间有界，出生不允许单维 >0.8 或 <0.2；混乱型不可出生，只能演化
+  initial:
+    ranges:
+      openness: [0.45, 0.75]
+      conscientiousness: [0.4, 0.7]
+      extraversion: [0.3, 0.7]
+      agreeableness: [0.45, 0.8]
+      neuroticism: [0.25, 0.65]
+    attachment_priors:
+      secure: 0.7
+      anxious: 0.18
+      avoidant: 0.12
+  evidence_cap: 200             # 证据链保留条数（面板只给事实，不给类型标签）
+
 # 桌面连接器（P9，尚未实现）：打开只会多一条告警，默认关闭
 desktop:
   enabled: false

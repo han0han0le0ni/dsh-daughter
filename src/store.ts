@@ -4,6 +4,8 @@ import { DatabaseSync } from 'node:sqlite';
 import YAML from 'yaml';
 import { atomicWriteFile, createRng, padDistance, safeFileName, silentLogger, withFileLock } from './util.js';
 import { normalizeReflexRule } from './runtime/content.js';
+import { createInitialL1, createInitialL2, defaultNarrative, deriveAttachment } from './runtime/personality.js';
+import type { InitialPersonalityInput } from './runtime/personality.js';
 import type { Logger } from './util.js';
 import type {
   AssetPackage,
@@ -68,10 +70,18 @@ export const DEFAULT_L1: L1Baseline = {
     agreeableness: 0.65,
     neuroticism: 0.4,
   },
+  innate: {
+    openness: 0.6,
+    conscientiousness: 0.55,
+    extraversion: 0.35,
+    agreeableness: 0.65,
+    neuroticism: 0.4,
+  },
   temperament: 'slow_warmup',
   moodBaseline: { pleasure: 0.1, arousal: -0.1, dominance: 0 },
   noveltySeeking: 0.45,
   plasticityBase: 0.35,
+  plasticity: 0.65,
   updatedAt: '1970-01-01T00:00:00.000Z',
 };
 
@@ -82,6 +92,7 @@ export const DEFAULT_L2: L2Relationship = {
   trustBaseline: 0.3,
   relationshipStage: 'acquaintance',
   relationshipDepth: 0.2,
+  attachmentType: 'secure',
   updatedAt: '1970-01-01T00:00:00.000Z',
 };
 
@@ -98,6 +109,8 @@ export const DEFAULT_L3: L3Cognition = {
     { id: 'CS-001', trigger: '被忽视', response: '先沉默，再试探性回应', weight: 0.4 },
     { id: 'CS-002', trigger: '压力很大', response: '降低表达幅度，先处理最急的事', weight: 0.6 },
   ] satisfies CopingStrategy[],
+  narrative: defaultNarrative(),
+  evidence: [],
   updatedAt: '1970-01-01T00:00:00.000Z',
 };
 
@@ -141,6 +154,8 @@ const DEFAULT_REFLEX_RULES: ReflexRule[] = [
 export interface StoreOptions {
   /** §5.3 单写者：false 时退化为无锁写，仅用于确认无并发写者的场景 */
   lock?: boolean;
+  /** 出生人格抽样区间与依恋先验（只影响新建角色，已有存档不动） */
+  personality?: InitialPersonalityInput;
 }
 
 export class Store {
@@ -149,6 +164,8 @@ export class Store {
   private db: DatabaseSync;
   private logger: Logger;
   private rand: () => number;
+  private readonly seed: number;
+  private readonly initialPersonality?: InitialPersonalityInput;
   private ftsAvailable = false;
   /** 最近一次 FTS 检索的失败原因；null 表示正常，供 index 计入降级指标 */
   lastFtsError: string | null = null;
@@ -165,6 +182,8 @@ export class Store {
     this.characterId = characterId;
     this.logger = logger;
     this.rand = createRng(seed);
+    this.seed = seed;
+    this.initialPersonality = options.personality;
     this.lockEnabled = options.lock !== false;
 
     this.ensureLayout();
@@ -401,9 +420,21 @@ export class Store {
     const l3 = this.readYaml<L3Cognition>(join(this.paths.neocortex, 'l3_cognition.yaml'), DEFAULT_L3);
     // 旧存档没有人格新增字段时补默认，避免善恶观整块丢失
     l3.moral = { ...DEFAULT_L3.moral, ...(l3.moral ?? {}), redLines: l3.moral?.redLines ?? DEFAULT_L3.moral.redLines };
+    // 自我叙事与证据链是后加的：老存档按中性值补齐，不追认历史
+    l3.narrative = { ...defaultNarrative(), ...(l3.narrative ?? {}), lockedAxes: l3.narrative?.lockedAxes ?? [] };
+    l3.evidence = l3.evidence ?? [];
+
+    const l1 = this.readYaml<L1Baseline>(join(this.paths.neocortex, 'l1_baseline.yaml'), DEFAULT_L1);
+    // 先天锚点缺失时用当前值兜底：旧存档等于"从现在开始不再有可漂移的起源"
+    l1.innate = l1.innate ?? { ...l1.bigFive };
+    l1.plasticity = l1.plasticity ?? Math.max(0, 1 - l1.plasticityBase);
+
+    const l2 = this.readYaml<L2Relationship>(join(this.paths.neocortex, 'l2_relationship.yaml'), DEFAULT_L2);
+    l2.attachmentType = l2.attachmentType ?? deriveAttachment(l2, false);
+
     return {
-      l1: this.readYaml(join(this.paths.neocortex, 'l1_baseline.yaml'), DEFAULT_L1),
-      l2: this.readYaml(join(this.paths.neocortex, 'l2_relationship.yaml'), DEFAULT_L2),
+      l1,
+      l2,
       l3,
       l4: this.readYaml(join(this.paths.neocortex, 'l4_subpersonas.yaml'), DEFAULT_L4),
     };
@@ -845,8 +876,11 @@ export class Store {
     mkdirSync(this.paths.archive, { recursive: true });
     mkdirSync(this.paths.starMap, { recursive: true });
 
-    this.writeIfMissing(join(this.paths.neocortex, 'l1_baseline.yaml'), DEFAULT_L1);
-    this.writeIfMissing(join(this.paths.neocortex, 'l2_relationship.yaml'), DEFAULT_L2);
+    // 出生人格：按 character_id + seed 抽样，不同角色落在不同点；同一角色重启不变
+    const initialL1 = createInitialL1(this.characterId, this.seed, this.initialPersonality);
+    const initialL2 = createInitialL2(this.characterId, this.seed, this.initialPersonality);
+    this.writeIfMissing(join(this.paths.neocortex, 'l1_baseline.yaml'), initialL1);
+    this.writeIfMissing(join(this.paths.neocortex, 'l2_relationship.yaml'), initialL2);
     this.writeIfMissing(join(this.paths.neocortex, 'l3_cognition.yaml'), DEFAULT_L3);
     this.writeIfMissing(join(this.paths.neocortex, 'l4_subpersonas.yaml'), DEFAULT_L4);
     this.writeIfMissing(join(this.paths.reflexes, 'rules.yaml'), DEFAULT_REFLEX_RULES);

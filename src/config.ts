@@ -88,6 +88,27 @@ export const defaultConfig: DaughterConfig = {
     min_turns_between_writes: 20,
     log_retention_days: 365,
   },
+  personality: {
+    enabled: true,
+    drift_cap: 0.6,
+    critical_threshold: 0.6,
+    cumulative_threshold: 0.3,
+    critical_step: 0.12,
+    cumulative_step: 0.02,
+    same_direction_bonus_after: 3,
+    repair: { secure: 1, anxious: 0.34, avoidant: 0.25, disorganized: 0.2 },
+    initial: {
+      ranges: {
+        openness: [0.45, 0.75],
+        conscientiousness: [0.4, 0.7],
+        extraversion: [0.3, 0.7],
+        agreeableness: [0.45, 0.8],
+        neuroticism: [0.25, 0.65],
+      },
+      attachment_priors: { secure: 0.7, anxious: 0.18, avoidant: 0.12 },
+    },
+    evidence_cap: 200,
+  },
   desktop: {
     enabled: true,
     bridge_url: 'http://127.0.0.1:47614',
