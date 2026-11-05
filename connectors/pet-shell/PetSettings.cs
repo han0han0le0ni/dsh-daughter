@@ -14,6 +14,12 @@ namespace DshPet
         private const string FolderName = "DshPet";
         private const string FileName = "pet.json";
 
+        /// <summary>插件桥：dsh-daughter 监听 47612，壳和 VPet MOD 都从这里取 /vpet/* 事件。</summary>
+        private const string DefaultBridgeUrl = "http://127.0.0.1:47612";
+
+        /// <summary>旧版默认值。47614 是桌面连接器（/windows、/screenshot），指向它取不到桌宠事件。</summary>
+        private const string LegacyBridgeUrl = "http://127.0.0.1:47614";
+
         private static readonly string[] KnownRoots =
         {
             @"E:\SteamLibrary\steamapps\common\VPet\mod\0000_core\pet\vup",
@@ -26,7 +32,11 @@ namespace DshPet
         public bool Topmost { get; set; } = true;
         public bool ClickThrough { get; set; } = true;
         public bool Bubble { get; set; } = true;
-        public string BridgeUrl { get; set; } = "http://127.0.0.1:47614";
+        /// <summary>
+        /// 插件桥地址。注意是 47612（dsh-daughter 的 /vpet/* 端点），
+        /// 47614 是桌面连接器（/windows、/screenshot），两者不是同一个服务。
+        /// </summary>
+        public string BridgeUrl { get; set; } = DefaultBridgeUrl;
         public double? Left { get; set; }
         public double? Top { get; set; }
         public int IdleMinMs { get; set; } = 22000;
@@ -55,7 +65,13 @@ namespace DshPet
                 if (!File.Exists(path)) return new PetSettings();
                 string json = File.ReadAllText(path);
                 var loaded = JsonSerializer.Deserialize<PetSettings>(json);
-                return loaded ?? new PetSettings();
+                if (loaded == null) return new PetSettings();
+                // 旧版存下来的 47614 一律归一到 47612，否则壳连的是桌面连接器，永远收不到事件
+                if (string.Equals((loaded.BridgeUrl ?? string.Empty).TrimEnd('/'), LegacyBridgeUrl, StringComparison.OrdinalIgnoreCase))
+                {
+                    loaded.BridgeUrl = DefaultBridgeUrl;
+                }
+                return loaded;
             }
             catch
             {

@@ -3,6 +3,10 @@ node_modules/
 dist/
 *.tsbuildinfo
 
+# C# 构建产物（VPet MOD 与 pet-shell 都需本地编译，不入库）
+connectors/**/bin/
+connectors/**/obj/
+
 # 运行时数据：这里存的是真实对话记忆、人格状态与会话快照，不入库
 brain/
 archive/
