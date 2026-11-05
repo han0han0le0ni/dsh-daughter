@@ -89,7 +89,27 @@ dotnet build -c Release -p:VPetDir="E:\SteamLibrary\steamapps\common\VPet"
 | 注入预算 | 硬上限 3000 tokens，按优先级裁剪，`constraint` 永不裁 |
 | 星图 | `/star-map/` 只读可视化：九个星系、Canvas 2D 手写透视、无需联网与 three.js |
 
-## 快速开始
+## 安装
+
+三种方式，按需选一种。
+
+**1. 通过 DSH 插件市场（推荐）**
+
+仓库自带一份 format 1 索引：[`market/index.json`](market/index.json)。在 DSH 里打开 **插件 → 发现 → 索引源 → 添加**，填入：
+
+```text
+https://cdn.jsdelivr.net/gh/han0han0le0ni/dsh-daughter@main/market/index.json
+```
+
+之后在「发现」里搜 `daughter` 安装即可。索引里固定了 commit，装到的是可复现的版本。
+
+**2. 直接从 git 装**
+
+```bash
+dsh plugin add git+https://github.com/han0han0le0ni/dsh-daughter.git
+```
+
+**3. 本地开发**
 
 ```bash
 npm install
@@ -97,6 +117,8 @@ npm run build        # tsc → dist/
 npm test             # 103 项
 npm run check:link   # 适配性 / 联动性自检，18 项
 ```
+
+> 仓库里提交了 `dist/`：市场与 git 安装没有构建步骤，必须带一份可直接加载的产物。改了 `src/` 记得 `npm run build` 再提交（`prepare` 脚本也会兜一层）。
 
 - 运行配置见 `config.yaml`（数值均有范围校验，非法值回落默认并告警）。
 - 运行时数据写到 `data_root`（默认 `.`），目录按脑区划分：`brain/hippocampus`、`brain/neocortex`、`brain/prefrontal` 等。

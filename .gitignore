@@ -1,7 +1,9 @@
-# 依赖与构建产物
+# 依赖
 node_modules/
-dist/
 *.tsbuildinfo
+
+# 注意：dist/ 故意不忽略。插件从 git 安装（market/index.json 的 git source）
+# 时没有构建步骤，仓库里必须带一份可用的 dist/。改了 src 记得 npm run build 再提交。
 
 # C# 构建产物（VPet MOD 与 pet-shell 都需本地编译，不入库）
 connectors/**/bin/
