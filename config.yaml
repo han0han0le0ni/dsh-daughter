@@ -1,4 +1,9 @@
-# dsh-daughter 配置（对应设计文档第 11 节）
+# dsh-daughter 默认配置模板（对应设计文档第 11 节）
+#
+# 这里是一份"开箱即用"的保守默认值，不含任何个人偏好：
+#   - 所有数值都是代码内置默认值，改这里等价于改默认行为
+#   - 想调整请直接改本文件；升级插件会覆盖本文件，个人配置建议另存备份
+#   - 未实现的配置项（desktop / backend / shared_across_*）会在启动时告警并忽略
 version: 1
 character_id: daughter-default
 
@@ -69,7 +74,7 @@ storage:
   scope: character          # 仅支持 character；其它取值会告警并按角色级运行
   shared_across_sessions: true
   shared_across_workspaces: true
-  data_root: .
+  data_root: .              # 相对于插件根目录；运行时数据都写在这里
   backend: sqlite
   # true = 人格/技能/资产/L5/日志写入走文件锁 + 原子写（§5.3）；false 会退化为无锁写并告警
   single_writer: true
@@ -110,16 +115,27 @@ decay:
   archive_threshold: 0.15
   archive_idle_days: 90
 
+# 情绪回落：闲置越久，L5 越靠近下面的基线；连续对话时几乎不生效（§14.7）
+emotion_relax:
+  enabled: true
+  rate_per_hour: 0.06
+  idle_hours: 0.5
+  stress_baseline: 0.2
+  fatigue_baseline: 0.15
+  safety_baseline: 0.7
+
 evolution:
   l1_max_delta_per_write: 0.02
   min_turns_between_writes: 20
   log_retention_days: 365
 
+# 桌面连接器（P9，尚未实现）：打开只会多一条告警，默认关闭
 desktop:
-  enabled: true
+  enabled: false
   bridge_url: http://127.0.0.1:47614
 
 # 桌宠联动（可选）：任何一项关掉/缺失，插件行为都与"没有桌宠"一致
+# 没装桌宠也不用改这里——没有心跳时 body_link 自动失效
 vpet:
   enabled: true
   body_link:

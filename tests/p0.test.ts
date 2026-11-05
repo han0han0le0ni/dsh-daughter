@@ -1290,7 +1290,7 @@ test('§4.2 人格写回：L2/L3/L4 变更落盘并写 evolution 日志', async 
   const store = new Store(root, 'daughter-default');
 
   for (let index = 0; index < 5; index += 1) {
-    await plugin.onUserMessage({ ctx: makeCtx(`s-evolve-${index}`), text: '今天和爸爸一起吃饭，聊得很开心', source: 'chat' });
+    await plugin.onUserMessage({ ctx: makeCtx(`s-evolve-${index}`), text: '今天和朋友一起吃饭，聊得很开心', source: 'chat' });
   }
 
   // 人为制造非归一化权重，验证写回时会被归一化
