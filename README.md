@@ -157,4 +157,4 @@ P0–P8 已落地并核对；P9 外部连接 3/7（VPet 桌宠 / Android / 桌�
 
 ## License
 
-尚未指定。如需开源分发，请补充 `LICENSE`。
+[MIT](LICENSE) © 2026 han0han0le0ni

@@ -88,6 +88,35 @@ interface HostCtx {
       handler: (req: IncomingMessage, res: ServerResponse) => void | Promise<void>;
     }): () => void;
   };
+  /**
+   * 宿主网络准入服务（可选注入）。返回 undefined 表示放行，否则是要回给请求方的状态码。
+   * 星图这类会暴露记忆内容的接口必须先过它；拿不到服务或它抛错时一律拒绝，
+   * 不能退化成"只看 Host / Origin / 环回地址"的判断。
+   */
+  connection?: {
+    requestRejection(req: IncomingMessage): number | undefined;
+  };
+}
+
+/** 取宿主准入结论：没服务、签名不对、抛错都按 403 处理。 */
+function admissionRejection(ctx: HostCtx, req: IncomingMessage): number | undefined {
+  let service = ctx.connection;
+  if (!service || typeof service.requestRejection !== 'function') {
+    try {
+      const viaGet = ctx.get('connection') as { requestRejection?: unknown } | undefined;
+      if (viaGet && typeof viaGet.requestRejection === 'function') {
+        service = viaGet as { requestRejection(req: IncomingMessage): number | undefined };
+      }
+    } catch {
+      service = undefined;
+    }
+  }
+  if (!service || typeof service.requestRejection !== 'function') return 403;
+  try {
+    return service.requestRejection(req);
+  } catch {
+    return 403;
+  }
 }
 
 /* ------------------------------ 常量与工具 ------------------------------ */
@@ -747,6 +776,13 @@ function registerStarMapPanel(
   }
 
   const handler = (req: IncomingMessage, res: ServerResponse): void => {
+    // 星图接口会吐出记忆与情绪数据，先过宿主准入（Host/Origin fence + 登录令牌）
+    const rejection = admissionRejection(ctx, req);
+    if (rejection !== undefined) {
+      res.statusCode = rejection;
+      res.end();
+      return;
+    }
     const url = new URL(req.url ?? '/', 'http://dsh.local');
     if (url.pathname.replace(/\/+$/, '') === '/star-map/api') {
       try {

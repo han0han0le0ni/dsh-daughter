@@ -17,6 +17,14 @@ interface HostCtx {
             handler: (req: IncomingMessage, res: ServerResponse) => void | Promise<void>;
         }): () => void;
     };
+    /**
+     * 宿主网络准入服务（可选注入）。返回 undefined 表示放行，否则是要回给请求方的状态码。
+     * 星图这类会暴露记忆内容的接口必须先过它；拿不到服务或它抛错时一律拒绝，
+     * 不能退化成"只看 Host / Origin / 环回地址"的判断。
+     */
+    connection?: {
+        requestRejection(req: IncomingMessage): number | undefined;
+    };
 }
 /** 解析 `/connectors/<source>/ingest`，非法来源返回 null */
 export declare function parseExternalIngestPath(url: string): EventRecord['source'] | null;

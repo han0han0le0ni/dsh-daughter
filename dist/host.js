@@ -10,6 +10,29 @@ import { registerDesktopInputTool } from './runtime/desktop-input.js';
 import { MoodMotionGate } from './runtime/mood-motion.js';
 import { VpetBridgeState } from './runtime/vpet-events.js';
 import { registerVpetControlTool } from './runtime/vpet-control.js';
+/** 取宿主准入结论：没服务、签名不对、抛错都按 403 处理。 */
+function admissionRejection(ctx, req) {
+    let service = ctx.connection;
+    if (!service || typeof service.requestRejection !== 'function') {
+        try {
+            const viaGet = ctx.get('connection');
+            if (viaGet && typeof viaGet.requestRejection === 'function') {
+                service = viaGet;
+            }
+        }
+        catch {
+            service = undefined;
+        }
+    }
+    if (!service || typeof service.requestRejection !== 'function')
+        return 403;
+    try {
+        return service.requestRejection(req);
+    }
+    catch {
+        return 403;
+    }
+}
 /* ------------------------------ 常量与工具 ------------------------------ */
 const CONTEXT_SOURCE = 'dsh-daughter';
 const TICK_INTERVAL_MS = 30 * 60 * 1000;
@@ -619,6 +642,13 @@ function registerStarMapPanel(ctx, plugin, pluginRoot, characterId, logger) {
         return () => { };
     }
     const handler = (req, res) => {
+        // 星图接口会吐出记忆与情绪数据，先过宿主准入（Host/Origin fence + 登录令牌）
+        const rejection = admissionRejection(ctx, req);
+        if (rejection !== undefined) {
+            res.statusCode = rejection;
+            res.end();
+            return;
+        }
         const url = new URL(req.url ?? '/', 'http://dsh.local');
         if (url.pathname.replace(/\/+$/, '') === '/star-map/api') {
             try {
