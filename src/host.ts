@@ -23,6 +23,7 @@ import type {
   ToolInvoker,
 } from './types.js';
 import type { Logger, ToolGate } from './util.js';
+import { createRng, hashText } from './util.js';
 
 /* -------------------------- 宿主（cordis）最小类型 -------------------------- */
 
@@ -889,8 +890,12 @@ export function createHost(
       const speakTimer = config.speak.enabled
         ? setInterval(() => {
             const now = new Date().toISOString();
+            // §6.1 禁止直接调用 Math.random：抖动由「角色 + 分钟」派生，
+            // 同一分钟重复评估得到同一个值，"她这次为什么开口"因此可复现。
+            const minute = Math.floor(Date.parse(now) / 60_000);
+            const jitter = createRng(hashText(`${config.character_id}:speak:${minute}`))() * 2 - 1;
             plugin
-              .speakPlan({ characterId: config.character_id, now, jitter: Math.random() * 2 - 1 })
+              .speakPlan({ characterId: config.character_id, now, jitter })
               .then(async (plan) => {
                 // hold 是她"想说但忍住了"，只留在存储里累积压力，不打扰任何人
                 if (!plan || plan.decision !== 'act' || !plan.text) return;

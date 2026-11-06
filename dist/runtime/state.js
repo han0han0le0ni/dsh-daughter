@@ -1,8 +1,21 @@
 import { clamp01, clampPad } from '../util.js';
-const POSITIVE_WORDS = ['好', '喜欢', '开心', '高兴', '谢谢', '厉害', '不错', '爱', '舒服', '顺利', '棒'];
-const NEGATIVE_WORDS = ['难受', '难过', '烦', '累', '压力', '讨厌', '生气', '失望', '焦虑', '崩溃', '疼'];
-const STRESS_WORDS = ['压力', '烦', '累', '急', '赶', ' deadline', '加班', '吵架', '崩溃', '来不及'];
-const FATIGUE_WORDS = ['困', '累', '熬夜', '失眠', '没睡', '疲惫'];
+const POSITIVE_WORDS = [
+    '好', '喜欢', '开心', '高兴', '谢谢', '厉害', '不错', '爱', '舒服', '顺利', '棒',
+    '满意', '放心', '期待', '温暖', '踏实', '有意思', '感动', '轻松', '靠谱',
+];
+/**
+ * 负向词表。早期只有 11 个，真实库 56 条事件全是正极性——
+ * "我怕又失败了""撑不住了"这类最典型的话一个都没命中，情绪维度等于常数。
+ */
+const NEGATIVE_WORDS = [
+    '难受', '难过', '烦', '累', '压力', '讨厌', '生气', '失望', '焦虑', '崩溃', '疼',
+    '害怕', '担心', '紧张', '委屈', '孤独', '想哭', '没意思', '无语', '搞砸', '完蛋',
+    '撑不住', '受不了', '自责', '愧疚', '后悔', '心累', '失败', '算了', '唉',
+];
+/** 否定词：紧挨在正面词前面时，这一处命中作废——"不开心"不是开心 */
+const NEGATION_WORDS = ['不', '没', '别', '无'];
+const STRESS_WORDS = ['压力', '烦', '累', '急', '赶', ' deadline', '加班', '吵架', '崩溃', '来不及', '心累', '撑不住', '搞砸', '担心'];
+const FATIGUE_WORDS = ['困', '累', '熬夜', '失眠', '没睡', '疲惫', '睡不着', '没力气'];
 const BOUNDARY_WORDS = ['滚', '闭嘴', '别管', '烦死了'];
 /** 单轮情绪推进幅度。0.16 时实测 pleasure 几乎不动（均值 |p|≈0.11），情绪维度在检索里退化成常数 */
 const PAD_GAIN = 0.3;
@@ -65,22 +78,66 @@ export function selectSubpersona(l4, preferredId) {
     return personas.reduce((best, item) => (item.weight > best.weight ? item : best), personas[0]);
 }
 export function sentimentPolarity(text) {
-    const pos = weightedHits(text, POSITIVE_WORDS);
-    const neg = weightedHits(text, NEGATIVE_WORDS);
+    const pos = weightedHits(text, POSITIVE_WORDS, true);
+    // 被否定的正面词反过来算负面："不开心""没意思""不舒服"都在说不好
+    const neg = weightedHits(text, NEGATIVE_WORDS) + negatedHits(text, POSITIVE_WORDS);
     if (pos === 0 && neg === 0)
         return 0;
-    return clampPad((pos - neg) / (pos + neg));
+    return clampPad((pos - neg) / Math.max(1, pos + neg));
 }
 /**
  * 词典极性。单字词（好/爱/棒/累/烦/疼）在中文里太容易误命中——
  * "你好""好像""还好"都会算成正面，实测让 pleasure 长期贴正半轴、方差几乎为零，
  * 所以单字给 0.35 的权重，多字词才按 1 计。
  */
-function weightedHits(text, words) {
+function weightedHits(text, words, skipNegated = false) {
     let score = 0;
     for (const word of words) {
-        if (word && text.includes(word))
+        if (!word)
+            continue;
+        let from = 0;
+        let hit = false;
+        while (true) {
+            const index = text.indexOf(word, from);
+            if (index < 0)
+                break;
+            if (skipNegated && isNegated(text, index)) {
+                from = index + 1;
+                continue;
+            }
+            hit = true;
+            break;
+        }
+        if (hit)
             score += word.length >= 2 ? 1 : 0.35;
+    }
+    return score;
+}
+/**
+ * 词前面是不是否定：允许中间隔一个程度副词——"不太舒服""没那么好"同样是否定，
+ * 只认紧挨着的前一个字会漏掉最常见的那几种说法。
+ */
+function isNegated(text, index) {
+    const window = text.slice(Math.max(0, index - 2), index);
+    return NEGATION_WORDS.some((negation) => window.includes(negation));
+}
+/** 被否定的正面词按负面计（"不开心""没意思"），权重与命中口径保持一致 */
+function negatedHits(text, words) {
+    let score = 0;
+    for (const word of words) {
+        if (!word)
+            continue;
+        let from = 0;
+        while (true) {
+            const index = text.indexOf(word, from);
+            if (index < 0)
+                break;
+            if (isNegated(text, index)) {
+                score += word.length >= 2 ? 0.6 : 0.2;
+                break;
+            }
+            from = index + 1;
+        }
     }
     return score;
 }

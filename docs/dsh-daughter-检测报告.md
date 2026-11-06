@@ -2,7 +2,7 @@
 
 - 时间：2026-11-04 首测，2026-11-05 复核，**2026-11-06 复跑**（本轮数值以复跑为准）
 - 方式：`npm run check:link`（`scripts/link-check.ts`），临时数据目录 + 临时端口（`DSH_DAUGHTER_BRIDGE_PORT`，默认 47912），不碰真实存档
-- 结果：**PASS 18 / WARN 0 / FAIL 0**；`npm test` **145 项全绿**；`tsc --noEmit` 无错；`dist` 新鲜度检查 PASS
+- 结果：**PASS 18 / WARN 0 / FAIL 0**；`npm test` **203 项全绿**；`tsc --noEmit` 无错；`dist` 新鲜度检查 PASS
 - 前置：2026-11-05 复核前 `dist` 曾落后于 `src`，首跑 PASS 17 / WARN 1，执行 `npm run build` 后转绿；2026-11-06 复跑时 `dist` 已晚于全部 `src`；行为动机模块落地后再次 `npm run build`，`dist` 17:50:26 晚于 `src` 17:49:39，check:link 复跑仍 PASS 18
 
 > 2026-11-06 新增性格演化模块（`tests/personality.test.ts` 9 项），不影响 18 项自检结论。

@@ -1,8 +1,8 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import YAML from 'yaml';
-import { atomicWriteFile, createRng, padDistance, safeFileName, silentLogger, withFileLock } from './util.js';
+import { atomicWriteFile, padDistance, safeFileName, silentLogger, withFileLock } from './util.js';
 import { normalizeReflexRule } from './runtime/content.js';
 import { createInitialL1, createInitialL2, defaultNarrative, deriveAttachment } from './runtime/personality.js';
 import type { InitialPersonalityInput } from './runtime/personality.js';
@@ -132,7 +132,7 @@ const DEFAULT_SAFETY: SafetyState = {
   since: '1970-01-01T00:00:00.000Z',
 };
 
-const DEFAULT_REFLEX_RULES: ReflexRule[] = [
+export const DEFAULT_REFLEX_RULES: ReflexRule[] = [
   {
     id: 'RFX-001',
     enabled: true,
@@ -163,12 +163,16 @@ export class Store {
   readonly dataRoot: string;
   private db: DatabaseSync;
   private logger: Logger;
-  private rand: () => number;
   private readonly seed: number;
+  /** 演化日志当天已用到的最大序号；跨天或首次调用时从文件重建 */
+  private evolutionSeq = 0;
+  private evolutionSeqDate: string | null = null;
   private readonly initialPersonality?: InitialPersonalityInput;
   private ftsAvailable = false;
   /** 最近一次 FTS 检索的失败原因；null 表示正常，供 index 计入降级指标 */
   lastFtsError: string | null = null;
+  /** 打开时是否重建过索引：'created' 新建、'repaired' 行数不一致后修复、null 未重建（供体检/观测） */
+  ftsRebuilt: 'created' | 'repaired' | null = null;
   private readonly lockEnabled: boolean;
 
   constructor(
@@ -181,7 +185,6 @@ export class Store {
     this.dataRoot = resolve(dataRoot);
     this.characterId = characterId;
     this.logger = logger;
-    this.rand = createRng(seed);
     this.seed = seed;
     this.initialPersonality = options.personality;
     this.lockEnabled = options.lock !== false;
@@ -365,9 +368,113 @@ export class Store {
       );
   }
 
+  /**
+   * 衰减/归档专用的轻量写：只动 weight 与 archived，不读整行、不读回看记录。
+   * 维护轮次要对全库每个事件跑一遍，走 updateEventMutable 每次都会多查一次
+   * emotion_history，事件上万条时这一项就是纯浪费。
+   */
+  updateEventDecay(id: string, weight: number, archived: boolean): void {
+    this.db
+      .prepare('UPDATE events SET weight = ?, archived = ? WHERE id = ? AND character_id = ?')
+      .run(weight, archived ? 1 : 0, id, this.characterId);
+  }
+
   /** 归档事件落盘到 archive/：完整记录留档，索引里只保留 archived 标记与薄字段 */
   archiveEvent(event: EventRecord): void {
     this.writeLocked(join(this.paths.archive, `${safeFileName(event.id)}.json`), JSON.stringify(event, null, 2));
+  }
+
+  /* ------------------------------ 重置支持 ------------------------------ */
+
+  /** 该角色的事件计数，供重置计划展示（只走索引，不读正文） */
+  countEvents(): { total: number; active: number; archived: number } {
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) AS total, SUM(archived = 0) AS active, SUM(archived = 1) AS archived
+         FROM events WHERE character_id = ?`,
+      )
+      .get(this.characterId) as unknown as
+      | { total: number; active: number | null; archived: number | null }
+      | undefined;
+    return {
+      total: Number(row?.total ?? 0),
+      active: Number(row?.active ?? 0),
+      archived: Number(row?.archived ?? 0),
+    };
+  }
+
+  /** 回看记录（emotion_now_history）条数 */
+  countEmotionHistory(): number {
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) AS total FROM emotion_history
+         WHERE event_id IN (SELECT id FROM events WHERE character_id = ?)`,
+      )
+      .get(this.characterId) as unknown as { total: number } | undefined;
+    return Number(row?.total ?? 0);
+  }
+
+  /**
+   * 清空该角色的记忆：事件、回看记录，以及它们的全文/归档文件。
+   * FTS 由 DELETE 触发器自动同步。人格、条件反射、技能卡、L5 状态不动——它们属于另外的重置域。
+   *
+   * 文件层必须一起删：只清表会留下永远读不到的 .txt/.json，
+   * 下次有人按文件统计就会看到"事件 0 条、文件 120 份"这种对不上的状态。
+   */
+  clearMemory(): { events: number; emotions: number } {
+    const ids = (
+      this.db.prepare('SELECT id FROM events WHERE character_id = ?').all(this.characterId) as unknown as Array<{
+        id: string;
+      }>
+    ).map((row) => row.id);
+
+    let emotions = 0;
+    let events = 0;
+    this.db.exec('BEGIN');
+    try {
+      emotions = Number(
+        this.db
+          .prepare(
+            `DELETE FROM emotion_history
+             WHERE event_id IN (SELECT id FROM events WHERE character_id = ?)`,
+          )
+          .run(this.characterId).changes ?? 0,
+      );
+      events = Number(this.db.prepare('DELETE FROM events WHERE character_id = ?').run(this.characterId).changes ?? 0);
+      this.db.exec('COMMIT');
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
+
+    // 归档目录是跨角色共享的，只按本次删掉的 id 摘文件
+    for (const id of ids) {
+      for (const file of [
+        join(this.paths.fulltext, `${safeFileName(id)}.txt`),
+        join(this.paths.archive, `${safeFileName(id)}.json`),
+      ]) {
+        try {
+          if (existsSync(file)) unlinkSync(file);
+        } catch (error) {
+          this.logger.warn('dsh-daughter: 清除记忆文件失败', { file, error: String(error) });
+        }
+      }
+    }
+
+    return { events, emotions };
+  }
+
+  /** 删除 meta：`foo*` 结尾不带百分号时按前缀匹配，其余按精确键 */
+  deleteMeta(patterns: string[]): number {
+    let removed = 0;
+    for (const pattern of patterns) {
+      const byPrefix = pattern.endsWith('*');
+      const stmt = this.db.prepare(
+        byPrefix ? 'DELETE FROM meta WHERE key LIKE ?' : 'DELETE FROM meta WHERE key = ?',
+      );
+      removed += Number(stmt.run(byPrefix ? `${pattern.slice(0, -1)}%` : pattern).changes ?? 0);
+    }
+    return removed;
   }
 
   /**
@@ -740,12 +847,48 @@ export class Store {
     );
   }
 
+  /**
+   * 演化日志 ID：`EVO-<日期>-<当天序号>`。
+   *
+   * 早期用 `createRng(seed)` 抽 4 位 hex，可 Store 一重建随机流就从头重放，
+   * 同一天最早的几条必然撞号（真实库 8 条日志只有 5 个唯一 ID），
+   * G5 要求的"可追溯"直接失效。改成读日志里的最大序号往上递增：
+   * 不依赖随机、进程重启和多实例写同一份日志都不会撞。
+   */
   newEvolutionId(now: string): string {
     const date = now.slice(0, 10).replace(/-/g, '');
-    const suffix = Math.floor(this.rand() * 0xffff)
-      .toString(16)
-      .padStart(4, '0');
-    return `EVO-${date}-${suffix}`;
+    if (this.evolutionSeqDate !== date) {
+      this.evolutionSeq = this.maxEvolutionSeq(date);
+      this.evolutionSeqDate = date;
+    }
+    this.evolutionSeq += 1;
+    return `EVO-${date}-${this.evolutionSeq.toString(16).padStart(4, '0')}`;
+  }
+
+  /** 当天日志里已用的最大序号；旧记录是随机后缀，按 hex 解析后接着往上走，避免与存量撞。 */
+  private maxEvolutionSeq(date: string): number {
+    const path = join(this.paths.evolution, `${safeFileName(this.characterId)}.jsonl`);
+    if (!existsSync(path)) return 0;
+    const prefix = `EVO-${date}-`;
+    let max = 0;
+    try {
+      for (const line of readFileSync(path, 'utf8').split('\n')) {
+        if (!line.includes(prefix)) continue;
+        let id = '';
+        try {
+          id = String((JSON.parse(line) as { id?: unknown }).id ?? '');
+        } catch {
+          continue;
+        }
+        if (!id.startsWith(prefix)) continue;
+        const value = Number.parseInt(id.slice(prefix.length), 16);
+        if (Number.isFinite(value) && value > max) max = value;
+      }
+    } catch {
+      // 日志读不出来就从头编号：ID 重复比写入失败轻，但不能让演化记录写不进去
+      return 0;
+    }
+    return max;
   }
 
   /**
@@ -758,8 +901,8 @@ export class Store {
       this.lastFtsError = 'fts unavailable';
       return scores;
     }
-    const normalized = query.replace(/["*()]/g, ' ').replace(/\s+/g, ' ').trim();
-    if ([...normalized.replace(/\s/g, '')].length < 3) return scores;
+    const expression = ftsExpression(query);
+    if (!expression) return scores;
 
     try {
       const rows = this.db
@@ -768,7 +911,7 @@ export class Store {
            WHERE events_fts MATCH ? AND e.character_id = ?
            ORDER BY rank LIMIT ?`,
         )
-        .all(`"${normalized}"`, this.characterId, limit) as unknown as Array<{ id: string }>;
+        .all(expression, this.characterId, limit) as unknown as Array<{ id: string }>;
       rows.forEach((row, index) => scores.set(row.id, 1 - index / Math.max(1, rows.length)));
       this.lastFtsError = null;
     } catch (error) {
@@ -824,6 +967,23 @@ export class Store {
     `);
     this.migrateFts();
     this.migrateFilterColumns();
+    this.migrateParticipants();
+  }
+
+  /**
+   * 单向来源的事件不该挂 'user'：早期一律写 ['self','user']，
+   * 社交性项恒为 1 让显著性虚高，人物画像把"刷到的视频"算成"和用户一起做的事"，
+   * L2 亲密度的锚点跟着失真。把已经写错的这批改回 ['self']（幂等）。
+   */
+  private migrateParticipants(): void {
+    const single = JSON.stringify(['self']);
+    this.db
+      .prepare(
+        `UPDATE events SET participants = ?
+          WHERE source IN ('douyin_content', 'system', 'android')
+            AND participants <> ?`,
+      )
+      .run(single, single);
   }
 
   /** 老库补列：认知滤网引入的 salience / merged_count，缺列时原地 ALTER */
@@ -846,9 +1006,18 @@ export class Store {
   /**
    * FTS5 全文索引（D-02）：外部内容表 + 触发器保持与 events 同步。
    * 用 trigram 分词器以支持中文子串检索；若运行环境未编译 FTS5，降级为仅 Dice 字面匹配。
+   *
+   * 两条运维修正：
+   * - UPDATE 触发器收窄到 `UPDATE OF title, summary, tags`。之前是整表 UPDATE，
+   *   而衰减/召回/归档每轮都会 UPDATE 权重，等于每次 tick 把所有事件的全文重写一遍。
+   * - `rebuild` 只在"新建索引"或"行数对不上"时执行。之前每次开进程都重建，
+   *   库越大启动越慢，而且对只读场景是白做功。
    */
   private migrateFts(): void {
     try {
+      const existed = this.db
+        .prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table' AND name = 'events_fts'")
+        .get() as unknown as { n: number };
       this.db.exec(`
         CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(
           title, summary, tags,
@@ -863,18 +1032,58 @@ export class Store {
           INSERT INTO events_fts(events_fts, rowid, title, summary, tags)
           VALUES ('delete', old.rowid, old.title, old.summary, old.tags);
         END;
-        CREATE TRIGGER IF NOT EXISTS events_fts_au AFTER UPDATE ON events BEGIN
+      `);
+      // 旧版本的整表 UPDATE 触发器必须先拆掉，否则收窄后的新触发器根本建不上
+      this.db.exec('DROP TRIGGER IF EXISTS events_fts_au');
+      this.db.exec(`
+        CREATE TRIGGER events_fts_au AFTER UPDATE OF title, summary, tags ON events BEGIN
           INSERT INTO events_fts(events_fts, rowid, title, summary, tags)
           VALUES ('delete', old.rowid, old.title, old.summary, old.tags);
           INSERT INTO events_fts(rowid, title, summary, tags)
           VALUES (new.rowid, new.title, new.summary, new.tags);
         END;
-        INSERT INTO events_fts(events_fts) VALUES ('rebuild');
       `);
       this.ftsAvailable = true;
+
+      if (Number(existed?.n ?? 0) === 0) {
+        this.db.exec("INSERT INTO events_fts(events_fts) VALUES ('rebuild')");
+        this.ftsRebuilt = 'created';
+      } else if (!this.ftsIndexUsable()) {
+        // 外部内容表的 COUNT(*) 与 integrity-check 都只看内容表，
+        // 索引被清空也照样报"正常"（实测 delete-all 后 MATCH 命中 0 而两者都不报错）。
+        // 唯一可靠的探针是拿真实标题真查一次。
+        this.db.exec("INSERT INTO events_fts(events_fts) VALUES ('rebuild')");
+        this.ftsRebuilt = 'repaired';
+        this.logger.warn('dsh-daughter: FTS 索引与事件表不一致，已重建');
+      }
     } catch (error) {
       this.ftsAvailable = false;
       this.logger.warn('dsh-daughter: FTS5 不可用，检索退回字面匹配', { error: String(error) });
+    }
+  }
+
+  /**
+   * 功能性探针：取几条标题够长的真实事件，按子串查一次索引。
+   * 命中说明索引和内容表对得上；查不到说明索引缺内容（需要 rebuild）。
+   * 空库直接按健康处理，避免每次启动都重建。
+   */
+  private ftsIndexUsable(): boolean {
+    try {
+      const rows = this.db
+        .prepare('SELECT title FROM events WHERE length(title) >= 3 ORDER BY rowid DESC LIMIT 5')
+        .all() as unknown as Array<{ title: string }>;
+      if (rows.length === 0) return true;
+      for (const row of rows) {
+        const token = [...String(row.title)].slice(0, 3).join('').replace(/["*()]/g, ' ').trim();
+        if ([...token].length < 3) continue;
+        const hit = this.db
+          .prepare('SELECT COUNT(*) AS n FROM events_fts WHERE events_fts MATCH ?')
+          .get(`"${token}"`) as unknown as { n: number };
+        return Number(hit.n) > 0;
+      }
+      return true;
+    } catch {
+      return false;
     }
   }
 
@@ -1039,6 +1248,26 @@ export class Store {
       stmt.run(eventId, entry.at, entry.emotion.pleasure, entry.emotion.arousal, entry.emotion.dominance, entry.reason);
     }
   }
+}
+
+/**
+ * 把自然语言查询转成 FTS5 表达式。
+ *
+ * trigram 分词器要求每个检索词至少 3 个字符，而短语匹配意味着查询里的空格必须
+ * 原样出现在正文里——中文正文没有空格，于是「下雨 心情」这类多词查询永远 0 命中，
+ * 只能靠 Dice 字面匹配兜底。这里拆词后逐词短语化、再用 AND 取交集：
+ * 单词查询仍然等价于子串匹配，多词查询变成"每个词都要出现"。
+ */
+function ftsExpression(query: string): string | null {
+  const cleaned = query
+    .replace(/["*():^]/g, ' ')
+    .replace(/[，。！？、；：,.!?;:\n\r\t]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!cleaned) return null;
+  const tokens = [...new Set(cleaned.split(' ').filter((token) => [...token].length >= 3))].slice(0, 8);
+  if (tokens.length === 0) return null;
+  return tokens.map((token) => `"${token}"`).join(' AND ');
 }
 
 function safeJsonArray(value: string): string[] {

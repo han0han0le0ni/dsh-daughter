@@ -1,6 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { defaultConfig } from '../src/config.js';
+import { createDaughterPlugin } from '../src/index.js';
 import {
   computeSpeakThreshold,
   computeSpeakUrge,
@@ -168,14 +172,14 @@ test('主动开口：日上限到了就不再主动', () => {
 
 test('主动开口：想说但忍住会攒劲，攒够了下一次才真开口', () => {
   const config = makeConfig();
-  // 6 小时：够到"想说"，但还没到"开口"
-  const first = evaluateSpeak(makeCtx({ idleMinutes: 600 }), config);
+  // 约 4 小时：够到"想说"，但还差临门一脚
+  const first = evaluateSpeak(makeCtx({ idleMinutes: 240 }), config);
   assert.equal(first.decision, 'hold', `应判 hold，实际 ${first.decision}`);
   assert.ok(first.carry > 0, '忍住应累积压力');
   assert.equal(first.text, undefined);
 
   // 攒下的压力让下一次跨过门槛
-  const second = evaluateSpeak(makeCtx({ idleMinutes: 600, carry: first.carry }), config);
+  const second = evaluateSpeak(makeCtx({ idleMinutes: 240, carry: first.carry }), config);
   assert.equal(second.decision, 'act');
   assert.ok(second.urge > first.urge);
 });
@@ -264,7 +268,7 @@ test('主动开口：正在开会时，再闲也不开口', () => {
     config,
   );
 
-  assert.equal(normal.decision, 'hold', '正常情况下这时已经在憋了');
+  assert.equal(normal.decision, 'act', '空闲这么久，正常情况下已经开口了');
   assert.notEqual(inMeeting.decision, 'act', '开会时不该冒出来');
   assert.ok(inMeeting.threshold > normal.threshold);
 });
@@ -278,4 +282,35 @@ test('主动开口：出厂默认关闭，装完插件不会自己开口', () =>
   const config = structuredClone(defaultConfig);
   assert.equal(config.speak.enabled, false, '自主行为必须显式开启');
   assert.equal(evaluateSpeak(makeCtx(), config).decision, 'silent');
+});
+
+test('主动开口：刚打开开关先记锚点，不会立刻冒一句', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'dsh-speak-'));
+  // 不碰真实桌面桥：否则这条用例的判定会随当前前台窗口漂移
+  const plugin = createDaughterPlugin({
+    pluginRoot: root,
+    config: makeConfig((cfg) => {
+      cfg.desktop.enabled = false;
+    }),
+  });
+
+  const first = await plugin.speakPlan({ characterId: 'daughter-default', now: DAYTIME });
+  assert.equal(first, null, '第一次评估只记锚点，不产出任何决定');
+
+  // 沉默时长还不够（1 分钟）：冷却期内一律 silent
+  const tooSoon = await plugin.speakPlan({
+    characterId: 'daughter-default',
+    now: new Date(Date.parse(DAYTIME) + 60_000).toISOString(),
+  });
+  assert.equal(tooSoon?.decision, 'silent');
+
+  // 过了冷却与最小沉默后，才进入正常决策（至少不是 null）
+  const later = await plugin.speakPlan({
+    characterId: 'daughter-default',
+    now: new Date(Date.parse(DAYTIME) + 70 * 60_000).toISOString(),
+  });
+  assert.ok(later, '过了锚点与冷却期应进入决策');
+
+  plugin.close();
+  rmSync(root, { recursive: true, force: true });
 });

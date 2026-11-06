@@ -60,6 +60,14 @@ test('§8.3 情绪极性：负面句为负，单字寒暄的强度远低于真�
   assert.ok(sentimentStrength('你好') < 0.25, `寒暄强度应很小，实际 ${sentimentStrength('你好')}`);
 });
 
+test('§8.3 情绪极性：口语负面与否定前缀', () => {
+  assert.ok(sentimentPolarity('我怕又失败了') < 0, '"失败"应判负，这是真实库里最常见的一句');
+  assert.ok(sentimentPolarity('撑不住了') < 0, '"撑不住"应判负');
+  assert.ok(sentimentPolarity('今天不开心') < 0, '"不开心"不能被算成开心');
+  assert.ok(sentimentPolarity('不太舒服') < 0, '"不舒服"应判负');
+  assert.ok(sentimentPolarity('还行，谢谢你') > 0, '正常致谢仍算正面');
+});
+
 test('§8.3 情绪推进：连续负面输入让 pleasure 落到负半轴', () => {
   const root = makeRoot();
   const store = new Store(root, 'daughter-default');

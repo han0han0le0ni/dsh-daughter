@@ -1,4 +1,4 @@
-import { clamp01, createRng, truncate } from '../util.js';
+import { clamp01, createRng, hashText, truncate } from '../util.js';
 import { sentimentPolarity } from './state.js';
 /** 冲击度权重：出现即说明这不是一句普通闲聊 */
 const CRITICAL_MARKERS = [
@@ -64,14 +64,6 @@ const ATTACHMENT_ANCHORS = {
     anxious: { anxiety: 0.62, avoidance: 0.32 },
     avoidant: { anxiety: 0.3, avoidance: 0.62 },
 };
-function hashId(value) {
-    let hash = 2166136261;
-    for (let index = 0; index < value.length; index += 1) {
-        hash ^= value.charCodeAt(index);
-        hash = Math.imul(hash, 16777619);
-    }
-    return hash >>> 0;
-}
 function between(rand, range) {
     return range[0] + (range[1] - range[0]) * rand();
 }
@@ -89,7 +81,7 @@ function pickAttachment(rand, priors) {
  * 五维先在有界区间内抽样，再按弱相关拉一点 O/E 与 N/A 的关系，避免出现"出生即极端"。
  */
 export function createInitialL1(characterId, seed, initial = { ranges: DEFAULT_INITIAL_RANGES, attachment_priors: DEFAULT_ATTACHMENT_PRIORS }, now = '1970-01-01T00:00:00.000Z') {
-    const rand = createRng((hashId(characterId) ^ seed) >>> 0);
+    const rand = createRng((hashText(characterId) ^ seed) >>> 0);
     const ranges = initial.ranges ?? DEFAULT_INITIAL_RANGES;
     const pick = (key) => round3(between(rand, ranges[key] ?? DEFAULT_INITIAL_RANGES[key]));
     let openness = pick('openness');
@@ -123,7 +115,7 @@ export function createInitialL1(characterId, seed, initial = { ranges: DEFAULT_I
 }
 /** 出生依恋：先验决定落点；混乱型不出生 */
 export function createInitialL2(characterId, seed, initial = { ranges: DEFAULT_INITIAL_RANGES, attachment_priors: DEFAULT_ATTACHMENT_PRIORS }, now = '1970-01-01T00:00:00.000Z') {
-    const rand = createRng((hashId(`l2:${characterId}`) ^ seed) >>> 0);
+    const rand = createRng((hashText(`l2:${characterId}`) ^ seed) >>> 0);
     const type = pickAttachment(rand, initial.attachment_priors ?? DEFAULT_ATTACHMENT_PRIORS);
     const anchor = ATTACHMENT_ANCHORS[type];
     const jitter = () => round3((rand() - 0.5) * 0.08);

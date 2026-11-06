@@ -131,6 +131,29 @@ export function decideIngest(
   const habituation = config.filter.habituation;
   const windowMs = Math.max(1, habituation.window_minutes) * 60_000;
   const nowMs = Date.parse(now);
+
+  // 同源爆发抑制：外部来源短时间灌进来一串（刷视频、切窗口、连发通知），
+  // 前几条还可能值得记，第五条只是"又在刷"。习惯化按"内容像不像"合并，
+  // 但模板相同、条目不同的输入相似度不够 0.9，于是照样一条条写库——
+  // 真实库里抖音内容一度占到事件总数的一半以上，且全是零召回。这里改按条数设上限。
+  const burst = config.filter.burst;
+  if (!burst.exempt_sources.includes(event.source)) {
+    const burstWindowMs = Math.max(1, burst.window_minutes) * 60_000;
+    let sameSource = 0;
+    for (const other of recent) {
+      if (other.source !== event.source) continue;
+      if (Math.abs(nowMs - Date.parse(other.createdAt)) > burstWindowMs) continue;
+      sameSource += 1;
+    }
+    if (sameSource >= burst.max_keep) {
+      return {
+        action: 'drop',
+        reason: `同源「${event.source}」在 ${burst.window_minutes} 分钟内已有 ${sameSource} 条，按爆发抑制丢弃`,
+        ...base,
+      };
+    }
+  }
+
   let duplicate: { event: EventRecord; similarity: number } | null = null;
   for (const other of recent) {
     if (other.source !== event.source) continue;

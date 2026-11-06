@@ -2,20 +2,25 @@ import { loadConfig, resolveDataRoot } from './config.js';
 import { performance } from 'node:perf_hooks';
 import { Store } from './store.js';
 import { Observability } from './runtime/observability.js';
-import { createRng, silentLogger, truncate } from './util.js';
+import { createRng, relativeTime, silentLogger, truncate } from './util.js';
 import { applyBodySignal, pickMotionByPad } from './runtime/body-link.js';
 import { decideIngest } from './runtime/filter.js';
 import { createInitialL5, selectSubpersona, updateL5 } from './runtime/state.js';
 import { evaluateSpeak, localDayKey } from './runtime/speak.js';
 import { readForeground } from './runtime/desktop-observe.js';
 import { containsDiagnosisLabel, evaluateSafety } from './runtime/safety.js';
-import { applySurprise, associateEvents, extractEvent, linkNewEvent, reconstructOnRecall, retrieveEvents, } from './runtime/memory.js';
+import { applySurprise, associateEvents, extractEvent, linkNewEvent, pickAssociationSeed, recallDrift, reconstructOnRecall, retrieveEvents, } from './runtime/memory.js';
 import { NO_MEMORY_CONSTRAINT, activateSkills, buildBlocks, buildEventDigest, buildPersonaText, buildRelationText, buildSkillDigest, buildStateHint, clipBlocks, matchReflex, WORKING_STYLE, } from './runtime/content.js';
 import { applyPersonalitySignal } from './runtime/personality.js';
 import { applyPersonaDrift, buildPersonProfiles, buildStarMap, buildThingProfiles, bumpSkill, learnDraftSkill, maybeFreezeSkill, runTick, } from './runtime/maintenance.js';
 /** §6.1 时延预算：超时只告警与记日志，不做硬中断（SQLite 同步查询无法中途取消） */
 const RETRIEVE_BUDGET_MS = 150;
 const BEFORE_PROMPT_BUDGET_MS = 100;
+/** 换对话框后的第一句：接上"上一个对话的结尾"最多带几条、往前看多久 */
+const CONTINUATION_LIMIT = 2;
+const CONTINUATION_WINDOW_MS = 30 * 86_400_000;
+/** 已见过首轮的会话集合上限，超了整体清空（只影响"是否首轮"，丢一次判断无副作用） */
+const SEEN_SESSIONS_CAP = 512;
 export function createDaughterPlugin(options) {
     return new Daughter(options);
 }
@@ -32,6 +37,8 @@ class Daughter {
     bodyCache = new Map();
     /** 已处理过的 (sessionId, turnId)，用于 after_response 幂等，避免同一轮重复写事件记忆 */
     handledTurns = new Map();
+    /** 已经构建过 prompt 的会话：只有第一次才允许"续接上一个对话" */
+    seenSessions = new Set();
     rng;
     onMotion;
     constructor(options) {
@@ -104,40 +111,95 @@ class Daughter {
             this.logger.warn('dsh-daughter: FTS 检索失败，本轮退回 Dice 兜底', { error: store.lastFtsError });
         }
         const withSurprise = applySurprise(hits, store.listCandidates(true, this.config.retrieval.max_candidates), this.config, this.rng, now);
-        const associated = await this.associate({
-            characterId: ctx.characterId,
-            seedEventIds: withSurprise.map((hit) => hit.event.id),
-            maxDepth: this.config.association.max_depth,
-            maxInjected: this.config.association.max_injected,
-        });
+        const candidatePool = store.listCandidates(!this.config.retrieval.exclude_archived, this.config.retrieval.max_candidates);
+        // 换对话框后的第一句：先接上"上一个对话的结尾"。
+        // 换窗口时"刚才"比"情绪像"更该被想起，所以它排在一跳联想之前——
+        // 这条路径只在该会话第一次构建 prompt 时走一次。
+        const sessionId = sessionKey(ctx);
+        const firstTurn = !this.seenSessions.has(sessionId);
+        this.seenSessions.add(sessionId);
+        if (this.seenSessions.size > SEEN_SESSIONS_CAP)
+            this.seenSessions.clear();
+        const nowMs = Date.parse(now);
+        const continued = firstTurn && this.config.association.fallback_when_no_match && withSurprise.length === 0
+            ? store
+                .listRecentEvents(new Date(Number.isFinite(nowMs) ? nowMs - CONTINUATION_WINDOW_MS : 0).toISOString(), CONTINUATION_LIMIT)
+                .map((event) => ({ event, score: event.weight, reason: '续接（上一个对话的结尾）' }))
+            : [];
+        // 一条字面命中都没有时，仍然可以从记忆网里往外摸：
+        // 人想不起直接对应的事，不会因此停止联想，而是从"当下情绪最像、时间最近"的那段记忆顺下去。
+        let seedIds = withSurprise.map((hit) => hit.event.id);
+        if (seedIds.length === 0 && this.config.association.fallback_when_no_match && continued.length === 0) {
+            const seed = pickAssociationSeed(candidatePool, l5.emotion, now, this.config);
+            if (seed)
+                seedIds = [seed.id];
+        }
+        const associated = seedIds.length > 0
+            ? await this.associate({
+                characterId: ctx.characterId,
+                seedEventIds: seedIds,
+                maxDepth: this.config.association.max_depth,
+                maxInjected: this.config.association.max_injected,
+            })
+            : [];
         const sub = this.pickSubpersona(persona, ctx.audience, l5.activeSubPersonaId);
-        const memoryHit = withSurprise.length > 0;
         // 关系画像参与注入：亲密度/关系变化、事物偏好、善恶观
         const relationText = buildRelationText({
             person: buildPersonProfiles(store, now).find((profile) => !profile.self && profile.name === 'user'),
             things: buildThingProfiles(store, now).slice(0, 8),
             moral: persona.l3.moral,
         });
+        // 联想命中要带上内容：只给 eventId 的联想块，模型根本用不上，等于没联想
+        const candidateById = new Map(candidatePool.map((event) => [event.id, event]));
+        const associatedViews = associated
+            .map((hit) => ({ hit, event: candidateById.get(hit.eventId) }))
+            .filter((item) => Boolean(item.event))
+            // §10.1 档位 ≥2 的注入只保留情绪中性的引用
+            .filter((item) => verdict.level < 2 || Math.abs(item.event.emotionAtTime.pleasure) <= 0.2);
         // §10.1 降级收紧主动联想：档位 1 砍半，档位 2 起整个联想块不再注入
-        const associationLimit = verdict.level >= 2 ? 0 : verdict.level >= 1 ? Math.ceil(associated.length / 2) : associated.length;
+        const associationLimit = verdict.level >= 2 ? 0 : verdict.level >= 1 ? Math.ceil(associatedViews.length / 2) : associatedViews.length;
         const associationText = associationLimit > 0
-            ? `[联想]\n${associated.slice(0, associationLimit).map((hit) => `- ${hit.eventId}（${hit.via.kind}）`).join('\n')}`
+            ? `[联想]\n${associatedViews
+                .slice(0, associationLimit)
+                .map(({ hit, event }) => {
+                const seed = hit.path && hit.path.length > 1 ? candidateById.get(hit.path[0]) : undefined;
+                const bridge = seed ? `，由「${truncate(seed.title, 12)}」想到` : '';
+                const hops = hit.depth ?? 1;
+                return `- 【${event.id}】${relativeTime(event.createdAt, now)}｜${truncate(event.title, 24)}｜${truncate(event.summary, 60)}（${hit.via.kind}${bridge}，${hops} 跳）`;
+            })
+                .join('\n')}`
             : '';
         // §10.1 档位 ≥2：注入只保留情绪中性的记忆，避免降级时被高强度情绪记录带偏
         const digestHits = verdict.level >= 2
             ? withSurprise.filter((hit) => Math.abs(hit.event.emotionAtTime.pleasure) <= 0.2)
             : withSurprise;
+        // 联想出来的记忆也进事件块：联想块优先级低，预算一紧就被裁，
+        // 内容先进事件块，才不会变成"想了但没说出口"
+        const directIds = new Set(digestHits.map((hit) => hit.event.id));
+        const associationDigest = associatedViews
+            .filter(({ event }) => !directIds.has(event.id))
+            .map(({ hit, event }) => ({
+            event,
+            score: hit.score,
+            reason: `联想（${hit.via.kind}，${hit.depth ?? 1} 跳）`,
+        }));
+        const injectedHits = [...digestHits, ...associationDigest];
+        // 续接条目不算命中：不进 promptCache.hits，也就不写 recallCount / weight，
+        // 否则每开一个新窗口它都被强化一次，最后永远排在最前面。
+        const memoryHit = withSurprise.length > 0 || associationDigest.length > 0;
+        const injected = continued.length > 0 ? [...injectedHits, ...continued] : injectedHits;
         // §4.4 全文层：只在命中且全文确实比摘要更长时取摘录，由事件块的 cap 兜底
         const excerpts = this.config.retrieval.expand_fulltext
-            ? this.collectExcerpts(store, digestHits)
+            ? this.collectExcerpts(store, injected)
             : undefined;
         const { blocks, usedTokens } = buildBlocks({
             personaText: [buildPersonaText(persona, sub), relationText, WORKING_STYLE].filter(Boolean).join('\n'),
             stateHint: buildStateHint(l5, verdict),
-            eventDigest: buildEventDigest(digestHits, excerpts),
+            eventDigest: buildEventDigest(injected, excerpts, now),
             skillDigest: buildSkillDigest(activation),
             associationText,
-            constraint: memoryHit ? null : NO_MEMORY_CONSTRAINT,
+            // 有内容就不能说"没有任何记录"：续接条目不算命中，但块里确实列了往事
+            constraint: injected.length > 0 ? null : NO_MEMORY_CONSTRAINT,
             config: this.config,
         });
         const budget = Math.min(input.tokenBudget, this.config.budget.max_total_tokens);
@@ -207,6 +269,10 @@ class Daughter {
         const skillsUpdated = [];
         const evolutionIds = [];
         if (cache) {
+            // 一次召回的多条记忆共享同一个"此刻"，只给情绪位移最大的那条记回看感受：
+            // 否则一轮命中十几条就写十几行同样的情绪（真实库 24 行只用了两轮），
+            // 而单条事件的 emotionNowHistory 上限只有 8 条，很快就被合并挤掉。
+            let recallTarget = null;
             for (const hit of cache.hits) {
                 const current = store.getEvent(hit.event.id);
                 if (!current)
@@ -216,7 +282,12 @@ class Daughter {
                     recallCount: current.recallCount + 1,
                     lastRecalledAt: now,
                 });
-                reconstructOnRecall(store, current, l5, now);
+                const drift = recallDrift(current, l5.emotion);
+                if (!recallTarget || drift > recallTarget.drift)
+                    recallTarget = { event: current, drift };
+            }
+            if (recallTarget) {
+                reconstructOnRecall(store, recallTarget.event, l5, now, this.config.retrieval.reconstruct_distance, this.config.retrieval.reconstruct_cooldown_minutes);
             }
             const main = cache.activation.main;
             if (main) {
@@ -418,8 +489,8 @@ class Daughter {
         const store = this.store(input.ctx.characterId);
         const persona = store.loadPersona();
         const l5 = this.getL5(input.ctx, persona);
-        const event = extractEvent(input.ctx, input.text, '', l5, this.rng);
-        event.source = input.source;
+        // 来源要在建事件时就定：参与者、显著性都要按来源推导，事后改 source 已经来不及
+        const event = extractEvent(input.ctx, input.text, '', l5, this.rng, input.source);
         const ingested = this.ingest(store, event, input.text);
         if (ingested.action === 'keep')
             linkNewEvent(store, event);
@@ -464,7 +535,13 @@ class Daughter {
         }
         const l5 = latestL5 ? this.effective(input.characterId, latestL5, input.now) : undefined;
         const lastAtRaw = store.getMeta('speak.lastAt');
-        const lastAtMs = lastAtRaw === null ? Number.NaN : Date.parse(lastAtRaw);
+        // 第一次评估（刚打开开关）先当"刚联系过"：否则沉默几小时后一开启就冒一句，
+        // 像定时任务而不是想起你。之后交给冷却与 min_idle 管。
+        if (lastAtRaw === null) {
+            store.setMeta('speak.lastAt', input.now);
+            return null;
+        }
+        const lastAtMs = Date.parse(lastAtRaw);
         const sinceLastSpeakMinutes = Number.isFinite(lastAtMs) ? Math.max(0, (nowMs - lastAtMs) / 60_000) : null;
         // 沉默时长以"最后一次对话"为准；没有对话记录时退到安装锚点
         const anchorRaw = latestL5?.lastTickAt ?? store.getMeta('speak.bootAt') ?? input.now;

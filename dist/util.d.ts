@@ -51,9 +51,19 @@ export declare function padDistance(a: {
 }): number;
 /** 字符二元组 Dice 相似度，作为无语义向量时的退化实现 */
 export declare function diceSimilarity(a: string, b: string): number;
+/** FNV-1a 字符串哈希：把稳定字符串折成种子，同输入同输出 */
+export declare function hashText(value: string): number;
 /** mulberry32，确定性随机源 */
 export declare function createRng(seed: number): () => number;
 export declare function newEventId(now: string, rand: () => number): string;
 export declare function safeFileName(value: string): string;
 export declare function daysBetween(from: string, to: string): number;
+/**
+ * 相对时间（"3 小时前""昨天"），注入记忆行时用。
+ *
+ * 记忆里只有绝对时间戳，模型拿到一列标题和摘要，分不清是刚才还是上个月，
+ * 于是不敢说"上次"、也不会说"刚才"。给它一个相对锚点，指代才有落点。
+ * 一天以上按 24 小时折算（"昨天"= 24–48 小时前），不做日历日边界——注入不需要那么精确。
+ */
+export declare function relativeTime(from: string, to: string): string;
 export declare function truncate(text: string, max: number): string;

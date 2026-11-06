@@ -116,7 +116,7 @@ dsh plugin add git+https://github.com/han0han0le0ni/dsh-daughter.git
 ```bash
 npm install
 npm run build        # tsc → dist/
-npm test             # 145 项
+npm test             # 203 项
 npm run check:link   # 适配性 / 联动性自检，18 项
 ```
 
@@ -126,19 +126,50 @@ npm run check:link   # 适配性 / 联动性自检，18 项
 - 运行时数据写到 `data_root`（默认 `.`），目录按脑区划分：`brain/hippocampus`、`brain/neocortex`、`brain/prefrontal` 等。
 - 桌宠是可选件：没有 MOD、没有 bridge、没有 `vpet` 配置时，插件行为与"完全不知道桌宠存在"一致。
 
+## 记忆体检
+
+记忆是「SQLite 索引 + 全文/归档文件 + 星图」三层，容易出现"表里删了、文件还在"这类对不上的状态。`npm run memory:doctor` 只读扫一遍，`--fix` 才动手修：
+
+```bash
+npm run memory:doctor -- --root=<数据根>            # 只报告
+npm run memory:doctor -- --root=<数据根> --fix       # 修可安全修的那几项
+npm run memory:doctor -- --root=<数据根> --json      # 给脚本用
+```
+
+检查项：SQLite 完整性、事件/归档计数、孤儿回看记录、FTS 索引是否真的查得到已有事件（外部内容表的 `COUNT(*)` 和 `integrity-check` 都看不出索引被清空，所以用真实标题做功能探针）、全文与归档文件的缺失/孤儿、字段越界、出边悬空/自环/重复/超过 12 条上限、星图边的引用一致性。
+
+`--fix` 的动作都是可逆或安全的：孤儿文件移到 `logs/memory-doctor-trash/<时间戳>/`（不删）、缺失全文用摘要补一份、悬空边从出边里摘掉、越界值夹回 0..1、FTS 必要时 rebuild。
+
+## 重置数据
+
+清记忆 / 恢复出厂人格 / 清条件反射 / 清技能 / 恢复出厂设置，都走 `npm run reset`。默认只列清单（dry-run），加 `--apply` 才真的删，删完会读回真实状态复核，复核不过退出码非 0：
+
+```bash
+npm run reset -- memory                 # 只报告：会清掉多少事件、回看、全文与归档
+npm run reset -- memory --apply         # 清记忆
+npm run reset -- personality --apply    # 人格恢复出厂 L1–L4
+npm run reset -- reflex --apply         # 反射规则与冷却状态
+npm run reset -- skills --apply         # 技能卡与动作模板
+npm run reset -- all --apply --yes      # 恢复出厂设置（多一道 --yes 确认）
+```
+
+可选：`--no-backup` 跳过备份、`--root=<路径>` 指定数据根。建议先停掉 DSH 再重置，否则插件会把内存里的状态写回去。
+
+被清掉的目录不会递归删除，而是整体移到 `logs/reset-trash/<时间戳>/`（想捞回来搬回去即可）；备份在 `logs/reset-backup/<时间戳>/`。
+
 ## 目录
 
 ```text
 src/                插件主体（23 个 TS 文件）
   runtime/          记忆、人格、状态、动机、主动开口、安全、滤网、反射、可观测性
-scripts/            自检与存量治理（link-check / filter-sweep）
+scripts/            自检与存量治理（link-check / filter-sweep / reset / memory-doctor）
 connectors/
   vpet/             VPet MOD 源码（mod-src/，10 个 .cs + info.lps）与桥接脚本（bridge.mjs）
   pet-shell/        独立 WPF 壳（读 VPet 素材，不启动游戏）
   android/          ADB 受限动作
   desktop/          桌面观察与输入
 web/                星图页面（纯静态）
-tests/              16 个测试文件
+tests/              21 个测试文件
 docs/               设计文档、实现核对、评估、检测报告
 ```
 
@@ -225,7 +256,7 @@ docs/               设计文档、实现核对、评估、检测报告
 
 ## 当前状态
 
-P0–P8 已落地并核对（当前 `npm test` **171 项全绿**，`check:link` PASS 18）；P9 外部连接 4/7（VPet 桌宠 / Android / 桌面已通，抖音走只读共享记忆拉取，QQ、Minecraft、单机待适配器）。已知短板与后续优先级见上面两份文档。
+P0–P8 已落地并核对（当前 `npm test` **203 项全绿**，`check:link` PASS 18）；P9 外部连接 4/7（VPet 桌宠 / Android / 桌面已通，抖音走只读共享记忆拉取，QQ、Minecraft、单机待适配器）。已知短板与后续优先级见上面两份文档。
 
 ## 隐私
 

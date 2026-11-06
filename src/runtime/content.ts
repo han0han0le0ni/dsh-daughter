@@ -15,7 +15,7 @@ import type {
 } from '../types.js';
 import type { PersonProfile, ThingProfile } from './maintenance.js';
 import { scoreSkills, type MotivationContext } from './motivation.js';
-import { clamp01, diceSimilarity, estimateTokens, truncate } from '../util.js';
+import { clamp01, diceSimilarity, estimateTokens, relativeTime, truncate } from '../util.js';
 
 /* -------------------------------- 人格小段 -------------------------------- */
 
@@ -272,11 +272,16 @@ function matches(rule: ReflexRule, userText: string, l5: L5State, source?: Event
 /**
  * 事件摘要块。命中事件若在全文层有更完整的记录（§4.4），
  * 且调用方已按预算取出摘录，就拼在同一行末尾，避免多占行数影响裁剪顺序。
+ *
+ * 每行带一个相对时间（"3 小时前"/"昨天"）：没有这个锚，模型分不清是刚才还是上个月，
+ * `now` 缺省时不显示，便于只关心内容的调用方与测试。
  */
-export function buildEventDigest(hits: RetrievalHit[], excerpts?: Map<string, string>): string {
+export function buildEventDigest(hits: RetrievalHit[], excerpts?: Map<string, string>, now?: string): string {
   if (hits.length === 0) return '';
   const lines = hits.map((hit) => {
-    const base = `- 【${hit.event.id}】${truncate(hit.event.title, 24)}｜${truncate(hit.event.summary, 70)}`;
+    const when = now ? relativeTime(hit.event.createdAt, now) : '';
+    const stamp = when ? `${when}｜` : '';
+    const base = `- 【${hit.event.id}】${stamp}${truncate(hit.event.title, 24)}｜${truncate(hit.event.summary, 70)}`;
     const excerpt = excerpts?.get(hit.event.id);
     return excerpt ? `${base}｜摘录：${excerpt}` : base;
   });
@@ -321,8 +326,8 @@ export function buildBlocks(input: {
   blocks.push(makeBlock('persona', input.personaText, caps.persona, 900));
   blocks.push(makeBlock('state_hint', input.stateHint, caps.state_hint, 850));
   if (input.eventDigest) blocks.push(makeBlock('event_digest', input.eventDigest, caps.event_digest, 500));
+  if (input.associationText) blocks.push(makeBlock('association', input.associationText, caps.association, 350));
   if (input.skillDigest) blocks.push(makeBlock('skill_digest', input.skillDigest, caps.skill_digest, 300));
-  if (input.associationText) blocks.push(makeBlock('association', input.associationText, caps.association, 100));
 
   return clipBlocks(blocks, config.budget.max_total_tokens);
 }

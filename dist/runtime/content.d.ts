@@ -32,8 +32,11 @@ export declare function normalizeReflexRule(raw: unknown): ReflexRule | null;
 /**
  * 事件摘要块。命中事件若在全文层有更完整的记录（§4.4），
  * 且调用方已按预算取出摘录，就拼在同一行末尾，避免多占行数影响裁剪顺序。
+ *
+ * 每行带一个相对时间（"3 小时前"/"昨天"）：没有这个锚，模型分不清是刚才还是上个月，
+ * `now` 缺省时不显示，便于只关心内容的调用方与测试。
  */
-export declare function buildEventDigest(hits: RetrievalHit[], excerpts?: Map<string, string>): string;
+export declare function buildEventDigest(hits: RetrievalHit[], excerpts?: Map<string, string>, now?: string): string;
 export declare function buildSkillDigest(activation: SkillActivation): string;
 export declare const NO_MEMORY_CONSTRAINT: string;
 export declare function buildBlocks(input: {

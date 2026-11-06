@@ -18,11 +18,6 @@ export declare function runTick(store: Store, config: DaughterConfig, now: strin
  * 连续对话时几乎不生效，隔夜才会明显回落——这也是「情绪会自己淡下去」的样子。
  */
 export declare function relaxL5(store: Store, config: DaughterConfig, now: string): number;
-/**
- * L2/L3/L4 低频写回：每天最多一次，每次变更都写 evolution 日志（G5）。
- * L2 关系深度向与「self」的亲密度平滑靠拢；L3 依近 7 天情绪缓慢调整防御成熟度并归一化权重；
- * L4 子人格权重每次更新后归一化。
- */
 export declare function evolvePersona(store: Store, now: string): string[];
 export declare function applyPersonaDrift(store: Store, config: DaughterConfig, persona: PersonaBundle, polarity: number, now: string): {
     changed: boolean;

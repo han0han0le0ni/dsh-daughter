@@ -6,6 +6,7 @@ export declare const DEFAULT_L1: L1Baseline;
 export declare const DEFAULT_L2: L2Relationship;
 export declare const DEFAULT_L3: L3Cognition;
 export declare const DEFAULT_L4: L4Contextual;
+export declare const DEFAULT_REFLEX_RULES: ReflexRule[];
 export interface StoreOptions {
     /** §5.3 单写者：false 时退化为无锁写，仅用于确认无并发写者的场景 */
     lock?: boolean;
@@ -17,12 +18,16 @@ export declare class Store {
     readonly dataRoot: string;
     private db;
     private logger;
-    private rand;
     private readonly seed;
+    /** 演化日志当天已用到的最大序号；跨天或首次调用时从文件重建 */
+    private evolutionSeq;
+    private evolutionSeqDate;
     private readonly initialPersonality?;
     private ftsAvailable;
     /** 最近一次 FTS 检索的失败原因；null 表示正常，供 index 计入降级指标 */
     lastFtsError: string | null;
+    /** 打开时是否重建过索引：'created' 新建、'repaired' 行数不一致后修复、null 未重建（供体检/观测） */
+    ftsRebuilt: 'created' | 'repaired' | null;
     private readonly lockEnabled;
     constructor(dataRoot: string, characterId: string, seed?: number, logger?: Logger, options?: StoreOptions);
     get paths(): {
@@ -58,8 +63,35 @@ export declare class Store {
     /** 时间窗口内的非归档事件：动机的情绪记忆只用近段事件，避免全表扫描 */
     listRecentEvents(since: string, limit?: number): EventRecord[];
     updateEventMutable(id: string, patch: Partial<Pick<EventRecord, 'weight' | 'lastRecalledAt' | 'recallCount' | 'archived' | 'links' | 'salience' | 'mergedCount'>>): void;
+    /**
+     * 衰减/归档专用的轻量写：只动 weight 与 archived，不读整行、不读回看记录。
+     * 维护轮次要对全库每个事件跑一遍，走 updateEventMutable 每次都会多查一次
+     * emotion_history，事件上万条时这一项就是纯浪费。
+     */
+    updateEventDecay(id: string, weight: number, archived: boolean): void;
     /** 归档事件落盘到 archive/：完整记录留档，索引里只保留 archived 标记与薄字段 */
     archiveEvent(event: EventRecord): void;
+    /** 该角色的事件计数，供重置计划展示（只走索引，不读正文） */
+    countEvents(): {
+        total: number;
+        active: number;
+        archived: number;
+    };
+    /** 回看记录（emotion_now_history）条数 */
+    countEmotionHistory(): number;
+    /**
+     * 清空该角色的记忆：事件、回看记录，以及它们的全文/归档文件。
+     * FTS 由 DELETE 触发器自动同步。人格、条件反射、技能卡、L5 状态不动——它们属于另外的重置域。
+     *
+     * 文件层必须一起删：只清表会留下永远读不到的 .txt/.json，
+     * 下次有人按文件统计就会看到"事件 0 条、文件 120 份"这种对不上的状态。
+     */
+    clearMemory(): {
+        events: number;
+        emotions: number;
+    };
+    /** 删除 meta：`foo*` 结尾不带百分号时按前缀匹配，其余按精确键 */
+    deleteMeta(patterns: string[]): number;
     /**
      * 修剪存量出边：按 strength 保留前 cap 条。
      * 新事件已由 linkNewEvent 限流，但历史库里的热点事件仍可能挂着上百条边。
@@ -114,20 +146,48 @@ export declare class Store {
     listEvolution(limit?: number): EvolutionLogEntry[];
     /** 按保留天数裁剪演化日志（log_retention_days），返回删除条数 */
     pruneEvolutionLogs(retentionDays: number, now: string): number;
+    /**
+     * 演化日志 ID：`EVO-<日期>-<当天序号>`。
+     *
+     * 早期用 `createRng(seed)` 抽 4 位 hex，可 Store 一重建随机流就从头重放，
+     * 同一天最早的几条必然撞号（真实库 8 条日志只有 5 个唯一 ID），
+     * G5 要求的"可追溯"直接失效。改成读日志里的最大序号往上递增：
+     * 不依赖随机、进程重启和多实例写同一份日志都不会撞。
+     */
     newEvolutionId(now: string): string;
+    /** 当天日志里已用的最大序号；旧记录是随机后缀，按 hex 解析后接着往上走，避免与存量撞。 */
+    private maxEvolutionSeq;
     /**
      * FTS5 字面检索（D-02）：返回 eventId → 归一化分数（0..1，排名靠前越接近 1）。
      * trigram 分词器要求查询至少 3 个字符，更短的查询返回空，由 Dice 字面匹配兜底。
      */
     searchFts(query: string, limit?: number): Map<string, number>;
     private migrate;
+    /**
+     * 单向来源的事件不该挂 'user'：早期一律写 ['self','user']，
+     * 社交性项恒为 1 让显著性虚高，人物画像把"刷到的视频"算成"和用户一起做的事"，
+     * L2 亲密度的锚点跟着失真。把已经写错的这批改回 ['self']（幂等）。
+     */
+    private migrateParticipants;
     /** 老库补列：认知滤网引入的 salience / merged_count，缺列时原地 ALTER */
     private migrateFilterColumns;
     /**
      * FTS5 全文索引（D-02）：外部内容表 + 触发器保持与 events 同步。
      * 用 trigram 分词器以支持中文子串检索；若运行环境未编译 FTS5，降级为仅 Dice 字面匹配。
+     *
+     * 两条运维修正：
+     * - UPDATE 触发器收窄到 `UPDATE OF title, summary, tags`。之前是整表 UPDATE，
+     *   而衰减/召回/归档每轮都会 UPDATE 权重，等于每次 tick 把所有事件的全文重写一遍。
+     * - `rebuild` 只在"新建索引"或"行数对不上"时执行。之前每次开进程都重建，
+     *   库越大启动越慢，而且对只读场景是白做功。
      */
     private migrateFts;
+    /**
+     * 功能性探针：取几条标题够长的真实事件，按子串查一次索引。
+     * 命中说明索引和内容表对得上；查不到说明索引缺内容（需要 rebuild）。
+     * 空库直接按健康处理，避免每次启动都重建。
+     */
+    private ftsIndexUsable;
     private seedDefaults;
     private ensureLayout;
     private writeIfMissing;

@@ -23,6 +23,13 @@ retrieval:
     emotion_match: 0.10
     link_proximity: 0.10
   min_score: 0.12
+  # 直接命中要求的最低语义分：语义为 0 的事件不算"相关记忆"，交给联想通道（§8.1）
+  min_semantic: 0.01
+  # 回忆重构的门槛：当前情绪与事件快照的 PAD 距离（满量程 1）到这个值才记一条"回看感受"。
+  # 真实库标定：事件两两距离 p50≈0.04、p90≈0.14；0.08 约对四分之一的召回生效，调小则更密。
+  reconstruct_distance: 0.08
+  # 同一条记忆的回看冷却（分钟）：距离门槛挡不住高频召回，一轮十几条两轮就能写满
+  reconstruct_cooldown_minutes: 360
   # 命中事件若在全文层有更完整记录，就在摘要行后补一句摘录（§4.4）
   expand_fulltext: true
   fulltext_excerpt_chars: 120
@@ -31,6 +38,9 @@ association:
   max_depth: 2
   max_injected: 2
   hop_decay: 0.6
+  # 一条字面都没命中时，从"当下情绪最像、时间最近"的记忆顺一跳（§8.2）；
+  # 换对话框后的第一句也靠它续接"上一个对话的结尾"。关掉即完全沉默。
+  fallback_when_no_match: true
 
 skills:
   max_main: 1
@@ -100,21 +110,23 @@ motivation:
 #   - 想说但忍住会累积"憋着"的压力，攒够了下一次才会真开口
 #   - 冷却期与日上限兜底，避免刷屏
 speak:
-  # 默认关闭：她会自己说话属于自主行为，装完插件不该自动开始。
-  # 想要这个效果，把下面改成 true 并确认桌宠在跑（否则消息没人接收）。
-  enabled: false
+  # 主动开口是自主行为，代码默认关闭；这里显式开启（桌宠没跑的话消息只会落进面板）。
+  enabled: true
   check_interval_min: 3      # 多久评估一次，不是多久说一次
-  min_idle_min: 45           # 至少安静这么久才开始考虑
-  idle_half_min: 180         # 思念的半饱和时间：沉默 3 小时约 0.5
+  # 活跃档：安静 25 分钟就进入考虑区间，思念 2 小时到半饱和。
+  # 早期 45/180/0.62 在"写代码"场景下要沉默四五个小时才开口，实际等于不会说话。
+  min_idle_min: 25           # 至少安静这么久才开始考虑
+  idle_half_min: 120         # 思念的半饱和时间：沉默 2 小时约 0.5
   trait_urge_gain: 1         # 人格对强度的放大倍数，0 = 人格不影响
-  threshold: 0.62            # 开口门槛
+  threshold: 0.52            # 开口门槛
   threshold_min: 0.40        # 门槛下限，防止被压成"见谁都说话"
-  refractory_min: 90         # 说过后强制安静
-  max_per_day: 5             # 一天最多主动开口几次
+  refractory_min: 60         # 说过后强制安静
+  max_per_day: 8             # 一天最多主动开口几次
   quiet_hours: [0, 7]        # 安静时段，支持跨午夜如 [23, 7]
   quiet_penalty: 0.35        # 安静时段抬升的门槛
   # 看得见屏幕时按场景抬门槛（需要 connectors/desktop 桥接在跑）：
-  # 会议 0.85 / 游戏 0.7 / 写代码 0.4 / 其它 0.15，乘以这个系数
+  # 会议 0.85 / 游戏 0.7 / 写代码 0.4 / 其它 0.15，乘以这个系数。
+  # 别为了"活跃"把这个调太小：沉默够久时，会议也拦不住。
   busy_penalty: 0.25
   hold_ratio: 0.75           # 到门槛的这个比例算"想说但忍住"
   carry_step: 0.05           # 一次忍住累积多少
@@ -199,6 +211,13 @@ filter:
   habituation:
     window_minutes: 30
     max_repeat: 3
+  # 同源爆发抑制：外部来源在窗口内最多留几条，超出即丢弃。
+  # 习惯化只认"内容很像"，而抖音这种模板相同、条目不同的输入躲得过去，会一条条写满事件库。
+  # 对话来源不设限：那是真实发生的事，不该被限流。
+  burst:
+    window_minutes: 60
+    max_keep: 3
+    exempt_sources: [chat, qq, douyin_dm]
   salience:
     drop_below: 0.2      # 显著性低于此值且来源可信度 ≤0.5 时直接丢弃（0.12 时"前台切换"这类系统事件会漏进来）
   # 忘却：低显著性 + 从未被想起 + 长期闲置 → 归档（不物理删除）
@@ -256,9 +275,11 @@ personality:
       avoidant: 0.12
   evidence_cap: 200             # 证据链保留条数（面板只给事实，不给类型标签）
 
-# 桌面连接器（P9，尚未实现）：打开只会多一条告警，默认关闭
+# 桌面连接器：注册 desktop_observe（看屏幕/截图）与 desktop_input（鼠标键盘窗口）。
+# 光开这里不够，还要把桥跑起来：node connectors/desktop/bridge.mjs（默认 47614）。
+# 写类动作（点击/按键）仍受安全档位熔断，档位 ≥2 时只读放行。
 desktop:
-  enabled: false
+  enabled: true
   bridge_url: http://127.0.0.1:47614
 
 # 抖音联动（可选）：只读 dsh-douyin-browser-local 的共享记忆库，

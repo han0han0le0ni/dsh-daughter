@@ -34,8 +34,19 @@ export function runTick(
 
   const events = store.listAllEvents();
   const lastTickRaw = store.getMeta('lastTickAt');
-  const fallbackMs = events.length > 0 ? Math.min(...events.map((event) => Date.parse(event.createdAt))) : Date.parse(now);
-  const lastTickMs = lastTickRaw === null ? fallbackMs : Number(lastTickRaw);
+  // 用 reduce 而不是 Math.min(...map)：事件上十万条时展开会直接爆栈；
+  // 顺带滤掉无法解析的时间戳，否则 fallback 会变成 NaN
+  const fallbackMs = events.reduce((earliest, event) => {
+    const at = Date.parse(event.createdAt);
+    if (!Number.isFinite(at)) return earliest;
+    return Number.isFinite(earliest) ? Math.min(earliest, at) : at;
+  }, Number.POSITIVE_INFINITY);
+  const parsedLastTick = lastTickRaw === null ? Number.NaN : Number(lastTickRaw);
+  // lastTickAt 由本模块写成毫秒数，但老库/外部工具可能写 ISO 字符串：
+  // Number('2026-11-06T…') 是 NaN，会让整轮权重全部变成 NaN 且再也回不来
+  const lastTickMs = Number.isFinite(parsedLastTick)
+    ? parsedLastTick
+    : Number.isFinite(fallbackMs) ? fallbackMs : Date.parse(now);
   const elapsedDays = Math.min(365, Math.max(0.01, (Date.parse(now) - lastTickMs) / 86_400_000));
   const factor = Math.pow(1 - config.decay.weight_decay_rate, elapsedDays);
 
@@ -56,8 +67,11 @@ export function runTick(
       store.archiveEvent(event);
       archivedIds.push(event.id);
     }
-    store.updateEventMutable(event.id, { weight: nextWeight, archived: shouldArchive });
-    if (nextWeight !== event.weight) decayed += 1;
+    if (nextWeight !== event.weight || shouldArchive) {
+      // 轻量写：只动 weight/archived，不重读整行与回看记录
+      store.updateEventDecay(event.id, nextWeight, shouldArchive);
+      if (nextWeight !== event.weight) decayed += 1;
+    }
     if (shouldArchive) archived += 1;
   }
 
@@ -72,7 +86,7 @@ export function runTick(
     const event = store.getEvent(id);
     if (!event || event.archived) continue;
     store.archiveEvent(event);
-    store.updateEventMutable(id, { archived: true });
+    store.updateEventDecay(id, event.weight, true);
     store.bumpCounter('filter.forget');
     archivedIds.push(id);
     forgotten += 1;
@@ -198,9 +212,18 @@ function normalizeValues(values: number[]): { values: number[]; changed: boolean
  * L2 关系深度向与「self」的亲密度平滑靠拢；L3 依近 7 天情绪缓慢调整防御成熟度并归一化权重；
  * L4 子人格权重每次更新后归一化。
  */
+/** 不用满 24 小时也能推进关系：每累计这么多轮对话就算一次"处了一段时间" */
+const PERSONA_TURNS_PER_EVOLVE = 8;
+
 export function evolvePersona(store: Store, now: string): string[] {
   const last = store.getMeta('lastPersonaEvolveAt');
-  if (last !== null && daysBetween(last, now) < 1) return [];
+  const turns = store.getMetaNumber('personaTurns', 0);
+  const lastTurns = store.getMetaNumber('lastPersonaEvolveTurns', 0);
+  // 纯按"每天一次"会漏掉同一天里的长对话：真实库 32 轮只推进过一次，
+  // 而且那次跑得早、事件还少，把深度从 0.12 拉到 0.093 之后再没动过，
+  // 32 轮聊完关系还停在"陌生"。改成"满 24 小时 或 累计 8 轮"先到先跑。
+  const enoughTurns = turns - lastTurns >= PERSONA_TURNS_PER_EVOLVE;
+  if (last !== null && daysBetween(last, now) < 1 && !enoughTurns) return [];
 
   const persona: PersonaBundle = store.loadPersona();
   const changed: string[] = [];
@@ -226,7 +249,10 @@ export function evolvePersona(store: Store, now: string): string[] {
   // 目标按互动质量打折：长期被冷落或吵架时，关系深度要能被拉回来
   const targetDepth = clamp01(rawTarget * (0.55 + 0.45 * quality));
   const gap = targetDepth - beforeL2.relationshipDepth;
-  const step = gap > 0 ? 0.04 + 0.08 * quality : 0.12;
+  // 依恋焦虑高的人对关系更敏感：靠近得快，退得也快。
+  // "焦虑型 0.826 却关系一动不动"是语义上最矛盾的地方——它不是慢热，是在意。
+  const cling = 1 + 0.4 * beforeL2.attachmentAnxiety;
+  const step = (gap > 0 ? 0.04 + 0.08 * quality : 0.12) * cling;
   const depth = Math.abs(gap) <= 0.01
     ? targetDepth
     : clamp01(beforeL2.relationshipDepth + Math.sign(gap) * Math.min(Math.abs(gap), step));
@@ -322,6 +348,8 @@ export function evolvePersona(store: Store, now: string): string[] {
   }
 
   if (changed.length > 0) store.setMeta('lastPersonaEvolveAt', now);
+  // 无论这次有没有改到东西都要记轮次基线，否则下一轮又满足"攒够 8 轮"而反复空跑
+  store.setMeta('lastPersonaEvolveTurns', String(turns));
   return changed;
 }
 

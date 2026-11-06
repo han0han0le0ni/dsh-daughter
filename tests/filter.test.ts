@@ -178,7 +178,12 @@ test('关闭滤网时一切放行', () => {
 
 test('检索降权：同语义下系统事件排在真人对话之后', async () => {
   const root = makeRoot();
-  const plugin = createDaughterPlugin({ pluginRoot: root, config: makeConfig() });
+  // 这条只验证排序。系统事件的社交性项现在按"没有用户参与"记 0.5（此前恒为 1），
+  // 显性值贴着默认门限，可能直接被丢掉，那就测不到"降权"了，所以这里把门限放低。
+  const config = makeConfig((cfg) => {
+    cfg.filter.salience.drop_below = 0.1;
+  });
+  const plugin = createDaughterPlugin({ pluginRoot: root, config });
   const now = new Date().toISOString();
   const ctx = makeCtx(now);
 

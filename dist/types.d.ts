@@ -328,6 +328,10 @@ export interface AssociationHit {
     eventId: string;
     via: EventLink;
     score: number;
+    /** 从种子往下走了几跳；1 表示直接相连 */
+    depth?: number;
+    /** 联想路径上的事件 ID，path[0] 是种子，用于向用户解释"为什么想起这段" */
+    path?: string[];
 }
 /** 动机信号通道：人格只调这些通道的阈值，不直接改分数 */
 export type SignalChannel = 'social' | 'achievement' | 'exploration' | 'safety' | 'harmony';
@@ -665,6 +669,24 @@ export interface DaughterConfig {
         max_candidates: number;
         score_weights: ScoreWeights;
         min_score: number;
+        /**
+         * 直接命中要求的最低语义分。语义为 0（与提问毫无字面/子串重合）的事件即使
+         * 近因、权重、情绪都很高也不算"相关记忆"——它们该由联想通道带出来，
+         * 否则每次提问都会固定返回最近那几条，联想永远排不上用场。
+         */
+        min_semantic: number;
+        /**
+         * 回忆重构的最小情绪位移（PAD 距离，满量程 1）。
+         * 只有当前情绪与事件快照差到这一步，才记一条"回看感受"。
+         * 真实库的标定：事件两两距离 p50≈0.04、p90≈0.14，所以 0.08 大约只对四分之一的召回生效；
+         * 想让回看更密集就往下调（0.04 起），想让记录更稀有就往上调。
+         */
+        reconstruct_distance: number;
+        /**
+         * 同一条记忆的回看冷却（分钟）。距离门槛挡不住高频召回，
+         * 一轮十几条、两轮就能写满 `emotionNowHistory`，所以要按时间限流。
+         */
+        reconstruct_cooldown_minutes: number;
         /** 命中事件是否在预算允许时展开全文层摘录（§4.4 摘要层/全文层分离） */
         expand_fulltext: boolean;
         /** 单条摘录的最大字符数 */
@@ -674,6 +696,8 @@ export interface DaughterConfig {
         max_depth: number;
         max_injected: number;
         hop_decay: number;
+        /** 字面检索一条都没命中时，用最近事件当种子跑一跳联想（"想不起对应的事，就从近的事顺下去"） */
+        fallback_when_no_match: boolean;
     };
     skills: {
         max_main: number;
@@ -800,6 +824,19 @@ export interface DaughterConfig {
             window_minutes: number;
             /** 窗口内同题条目最多保留几次计数，超过后不再入库 */
             max_repeat: number;
+        };
+        /**
+         * 同源爆发抑制：外部来源短时间涌进来一串内容时（刷视频、切窗口）不能照单全收。
+         * 习惯化按"内容像不像"合并，模板相同但条目不同的输入相似度不够，
+         * 于是照样一条条写库——真实库里抖音一度占到事件总数的一半以上。
+         */
+        burst: {
+            /** 计数窗口（分钟） */
+            window_minutes: number;
+            /** 窗口内同一来源最多保留几条，超出即丢弃 */
+            max_keep: number;
+            /** 不受配额限制的来源：对话是真实发生的事，不该被限流 */
+            exempt_sources: string[];
         };
         salience: {
             /** 显著性低于该值且来源可信度 ≤0.5 时直接丢弃 */

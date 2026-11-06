@@ -21,7 +21,7 @@ import type {
   SelfNarrative,
 } from '../types.js';
 import type { Store } from '../store.js';
-import { clamp01, createRng, truncate } from '../util.js';
+import { clamp01, createRng, hashText, truncate } from '../util.js';
 import { sentimentPolarity } from './state.js';
 
 /** 冲击度权重：出现即说明这不是一句普通闲聊 */
@@ -95,14 +95,6 @@ const ATTACHMENT_ANCHORS: Record<Exclude<AttachmentType, 'disorganized'>, { anxi
   avoidant: { anxiety: 0.3, avoidance: 0.62 },
 };
 
-function hashId(value: string): number {
-  let hash = 2166136261;
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return hash >>> 0;
-}
 
 function between(rand: () => number, range: [number, number]): number {
   return range[0] + (range[1] - range[0]) * rand();
@@ -126,7 +118,7 @@ export function createInitialL1(
   initial: InitialPersonalityInput = { ranges: DEFAULT_INITIAL_RANGES, attachment_priors: DEFAULT_ATTACHMENT_PRIORS },
   now = '1970-01-01T00:00:00.000Z',
 ): L1Baseline {
-  const rand = createRng((hashId(characterId) ^ seed) >>> 0);
+  const rand = createRng((hashText(characterId) ^ seed) >>> 0);
   const ranges = initial.ranges ?? DEFAULT_INITIAL_RANGES;
   const pick = (key: keyof BigFive): number => round3(between(rand, ranges[key] ?? DEFAULT_INITIAL_RANGES[key]));
 
@@ -171,7 +163,7 @@ export function createInitialL2(
   initial: InitialPersonalityInput = { ranges: DEFAULT_INITIAL_RANGES, attachment_priors: DEFAULT_ATTACHMENT_PRIORS },
   now = '1970-01-01T00:00:00.000Z',
 ): L2Relationship {
-  const rand = createRng((hashId(`l2:${characterId}`) ^ seed) >>> 0);
+  const rand = createRng((hashText(`l2:${characterId}`) ^ seed) >>> 0);
   const type = pickAttachment(rand, initial.attachment_priors ?? DEFAULT_ATTACHMENT_PRIORS);
   const anchor = ATTACHMENT_ANCHORS[type];
   const jitter = () => round3((rand() - 0.5) * 0.08);

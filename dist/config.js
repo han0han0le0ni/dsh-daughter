@@ -21,6 +21,9 @@ export const defaultConfig = {
             link_proximity: 0.1,
         },
         min_score: 0.12,
+        min_semantic: 0.01,
+        reconstruct_distance: 0.08,
+        reconstruct_cooldown_minutes: 360,
         expand_fulltext: true,
         fulltext_excerpt_chars: 120,
     },
@@ -28,6 +31,7 @@ export const defaultConfig = {
         max_depth: 2,
         max_injected: 2,
         hop_decay: 0.6,
+        fallback_when_no_match: true,
     },
     skills: {
         max_main: 1,
@@ -73,13 +77,15 @@ export const defaultConfig = {
         // 默认关闭：主动开口是自主行为，必须显式开启，不能装完就自己说话
         enabled: false,
         check_interval_min: 3,
-        min_idle_min: 45,
-        idle_half_min: 180,
+        // 活跃档：安静 25 分钟就进入考虑区间，思念 2 小时就到半饱和。
+        // 早期 45/180/0.62 的组合在写代码的场景下要沉默四五个小时才开口，等于装了个哑巴。
+        min_idle_min: 25,
+        idle_half_min: 120,
         trait_urge_gain: 1,
-        threshold: 0.62,
+        threshold: 0.52,
         threshold_min: 0.4,
-        refractory_min: 90,
-        max_per_day: 5,
+        refractory_min: 60,
+        max_per_day: 8,
         quiet_hours: [0, 7],
         quiet_penalty: 0.35,
         busy_penalty: 0.25,
@@ -189,6 +195,7 @@ export const defaultConfig = {
         },
         shield: { sources: [], keywords: [], patterns: [] },
         habituation: { window_minutes: 30, max_repeat: 3 },
+        burst: { window_minutes: 60, max_keep: 3, exempt_sources: ['chat', 'qq', 'douyin_dm'] },
         salience: { drop_below: 0.2 },
         forget: { enabled: true, idle_days: 30, min_salience: 0.2 },
     },
@@ -279,6 +286,10 @@ function mergeDeep(base, override) {
 }
 function normalizeConfig(config) {
     config.retrieval.top_k = Math.max(1, Math.round(num(config.retrieval.top_k, 5)));
+    config.retrieval.min_semantic = clampUnit(num(config.retrieval.min_semantic, 0.01), 0.01);
+    // 回看感受的触发距离：0 会让每次召回都写一条，1 等于永不写，两端都无意义
+    config.retrieval.reconstruct_distance = Math.min(0.5, clampUnit(num(config.retrieval.reconstruct_distance, 0.08), 0.08));
+    config.retrieval.reconstruct_cooldown_minutes = Math.min(1440, Math.max(0, Math.round(num(config.retrieval.reconstruct_cooldown_minutes, 360))));
     // 打分权重归一化到和为 1：min_score 是绝对门限，权重整体放大 3 倍会让召回条数
     // 静默变化，不归一化等于把两个无关参数耦合在一起
     const weights = config.retrieval.score_weights;
@@ -359,15 +370,16 @@ function normalizeConfig(config) {
     const speak = config.speak;
     speak.enabled = speak.enabled !== false;
     speak.check_interval_min = clampRange(speak.check_interval_min, 1, 120, 3);
-    speak.min_idle_min = clampRange(speak.min_idle_min, 1, 2880, 45);
-    speak.idle_half_min = clampRange(speak.idle_half_min, 5, 2880, 180);
+    speak.min_idle_min = clampRange(speak.min_idle_min, 1, 2880, 25);
+    speak.idle_half_min = clampRange(speak.idle_half_min, 5, 2880, 120);
     speak.trait_urge_gain = clampRange(speak.trait_urge_gain, 0, 2, 1);
-    speak.threshold = clampRange(speak.threshold, 0.1, 1, 0.62);
+    speak.threshold = clampRange(speak.threshold, 0.1, 1, 0.52);
     // 下限不能高于基础阈值，否则等于把门槛整体抬高
     speak.threshold_min = clampRange(speak.threshold_min, 0, speak.threshold, 0.4);
-    speak.refractory_min = clampRange(speak.refractory_min, 0, 10080, 90);
-    speak.max_per_day = Math.min(48, Math.max(0, Math.round(num(speak.max_per_day, 5))));
+    speak.refractory_min = clampRange(speak.refractory_min, 0, 10080, 60);
+    speak.max_per_day = Math.min(48, Math.max(0, Math.round(num(speak.max_per_day, 8))));
     speak.quiet_penalty = clampRange(speak.quiet_penalty, 0, 1, 0.35);
+    // 会议/游戏仍然要能拦住：这个系数调小，长时间沉默会连开会都敢插话
     speak.busy_penalty = clampRange(speak.busy_penalty, 0, 1, 0.25);
     speak.hold_ratio = clampRange(speak.hold_ratio, 0.1, 1, 0.75);
     speak.carry_step = clampRange(speak.carry_step, 0, 0.5, 0.05);
@@ -430,6 +442,7 @@ function normalizeConfig(config) {
     // 一个都没配成时退回桌宠：宁可只到气泡，也不要静默丢消息
     expression.sinks = sinks.length > 0 ? sinks : [{ type: 'vpet' }];
     config.association.max_depth = Math.min(3, Math.max(1, Math.round(num(config.association.max_depth, 2))));
+    config.association.fallback_when_no_match = config.association.fallback_when_no_match !== false;
     config.budget.max_total_tokens = Math.max(200, Math.round(num(config.budget.max_total_tokens, 3000)));
     config.safety.thresholds.stress_level1 = num(config.safety.thresholds.stress_level1, 0.7);
     config.safety.thresholds.safety_level2 = num(config.safety.thresholds.safety_level2, 0.35);
@@ -440,6 +453,10 @@ function normalizeConfig(config) {
     const filter = config.filter;
     filter.habituation.window_minutes = Math.min(1440, Math.max(1, Math.round(num(filter.habituation.window_minutes, 30))));
     filter.habituation.max_repeat = Math.min(20, Math.max(1, Math.round(num(filter.habituation.max_repeat, 3))));
+    filter.burst.window_minutes = Math.min(1440, Math.max(1, Math.round(num(filter.burst.window_minutes, 60))));
+    filter.burst.max_keep = Math.min(20, Math.max(1, Math.round(num(filter.burst.max_keep, 3))));
+    filter.burst.exempt_sources = (Array.isArray(filter.burst.exempt_sources) ? filter.burst.exempt_sources : [])
+        .filter((source) => typeof source === 'string' && source.length > 0);
     filter.salience.drop_below = clampUnit(filter.salience.drop_below, 0.2);
     filter.forget.idle_days = Math.min(3650, Math.max(1, Math.round(num(filter.forget.idle_days, 30))));
     filter.forget.min_salience = clampUnit(filter.forget.min_salience, 0.2);

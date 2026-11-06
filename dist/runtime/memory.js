@@ -10,12 +10,29 @@ const TAG_LEXICON = [
     { tag: '社交', words: ['朋友', '同学', '聊天', '群里', '抖音', 'QQ'] },
     { tag: '约定', words: ['下次', '记得', '答应', '说好', '约定'] },
 ];
+/** 单字弱命中分：只保证不被 `min_semantic` 挡掉，排序上仍低于二字以上的真实重合 */
+const SINGLE_CHAR_HIT = 0.3;
+/**
+ * 单字查询（"累""饿"）在 bigram Dice 下恒为 0——两个字符才凑得出一个二元组。
+ * 可这类一字问句恰恰是最常见的输入，正文里明明写着却检不到，等于把最该命中的场景漏掉。
+ * 这里按"正文包含"补一个弱命中分，归一化口径与 Dice 一致（去空白与标点）。
+ */
+function singleCharHit(query, event) {
+    const q = normalizeQuery(query);
+    if ([...q].length !== 1)
+        return 0;
+    const haystack = normalizeQuery(`${event.title}${event.summary}${event.tags.join('')}`);
+    return haystack.includes(q) ? SINGLE_CHAR_HIT : 0;
+}
+function normalizeQuery(text) {
+    return text.toLowerCase().replace(/[\s\p{P}\p{S}]/gu, '');
+}
 export function retrieveEvents(args) {
     const { query, now, topK, currentEmotion, config } = args;
     const w = config.retrieval.score_weights;
     const fts = args.ftsScores?.(query);
     const scored = args.candidates.map((event) => {
-        const dice = Math.max(diceSimilarity(query, event.title) * 1.0, diceSimilarity(query, event.summary) * 0.95, diceSimilarity(query, event.tags.join(' ')) * 0.6);
+        const dice = Math.max(diceSimilarity(query, event.title) * 1.0, diceSimilarity(query, event.summary) * 0.95, diceSimilarity(query, event.tags.join(' ')) * 0.6, singleCharHit(query, event));
         // FTS5 命中优先，Dice 作为短查询与索引不可用时的兜底
         const semantic = Math.max(dice, fts?.get(event.id) ?? 0);
         const recency = 0.5 ** (daysBetween(event.createdAt, now) / Math.max(1, config.retrieval.half_life_days));
@@ -53,8 +70,12 @@ export function retrieveEvents(args) {
         // 认知滤网：低可信来源整体降权（窗口标题这类系统事件不该挤掉真人对话）
         item.score = raw * (config.filter.enabled ? sourceWeightOf(item.event.source, config) : 1);
     }
+    // 命中才叫相关记忆：语义为 0 的候选只是"最近、最重、情绪最像"，
+    // 每次都把它塞进相关记忆，联想通道就永远没有位置。
+    // 一条都没命中时不在这里硬凑，交给 pickAssociationSeed 从记忆网里挑种子，
+    // 由联想块（低优先级、限深限条）把内容带出来。
     return scored
-        .filter((item) => item.score >= config.retrieval.min_score)
+        .filter((item) => item.semantic >= config.retrieval.min_semantic && item.score >= config.retrieval.min_score)
         .sort((a, b) => b.score - a.score)
         .slice(0, topK)
         .map((item) => ({
@@ -63,11 +84,53 @@ export function retrieveEvents(args) {
         reason: `语义 ${round(item.semantic)} / 近因 ${round(item.recency)} / 权重 ${round(item.weight)} / 情绪 ${round(item.emotionMatch)}`,
     }));
 }
+/** 种子选择的权重：情绪像不像比近不近更贴近"共鸣"，近因只作次要参考 */
+const SEED_EMOTION_WEIGHT = 0.6;
+const SEED_RECENCY_WEIGHT = 0.4;
+/**
+ * 一条字面命中都没有时，从记忆网里挑一个种子往外摸（`fallback_when_no_match`）。
+ *
+ * 早期实现挑"出边最多"的那条：不管用户说了什么，都从同一段最热闹的记忆顺下去，
+ * 当下情绪完全没参与，情绪共鸣（"今天很累"想起上次也很累的那天）就落不了地。
+ * 现在先按"情绪像 + 近"排序，出边只作为能否联想的前提——没有出边的种子顺不出东西，
+ * 挑它等于白挑，不如不挑，让上层走 `[无记忆约束]`。
+ */
+export function pickAssociationSeed(candidates, currentEmotion, now, config) {
+    let best;
+    for (const event of candidates) {
+        if (event.links.length === 0)
+            continue;
+        const emotionMatch = 1 - padDistance(currentEmotion, event.emotionAtTime);
+        const recency = 0.5 ** (daysBetween(event.createdAt, now) / Math.max(1, config.retrieval.half_life_days));
+        const score = SEED_EMOTION_WEIGHT * emotionMatch + SEED_RECENCY_WEIGHT * recency;
+        if (!best || score > best.score)
+            best = { event, score };
+    }
+    return best?.event;
+}
+/** 边太弱时不配叫联想：真实库里一条事件能挂满 12 条出边，弱边会把 BFS 变成随机游走 */
+const MIN_LINK_STRENGTH = 0.2;
+/** 多条线索指向同一条记忆时的强化系数：第二次到达只按残值累加，避免刷分 */
+const MULTI_PATH_BONUS = 0.25;
+/**
+ * 沿联想边扩展（BFS）。返回的是"经由哪条边、走了几步、为什么想起"。
+ *
+ * 两处和早期实现的差异：
+ * - 边的遍历按 strength 降序，弱边直接跳过。之前 12 条出边等权遍历，
+ *   取前 2 条基本等于随机挑。
+ * - 同一目标被多条路径命中时做残值累加：多条线索都指向它，说明这段记忆在
+ *   记忆网里更"中心"，分数应当更高，而不是被 visited 直接丢弃。
+ */
 export function associateEvents(seedIds, candidates, maxDepth, maxInjected, hopDecay) {
     const byId = new Map(candidates.map((event) => [event.id, event]));
     const visited = new Set(seedIds);
-    const queue = seedIds.map((id) => ({ id, depth: 0, score: 1 }));
-    const hits = [];
+    const queue = seedIds.map((id) => ({
+        id,
+        depth: 0,
+        score: 1,
+        path: [id],
+    }));
+    const found = new Map();
     while (queue.length > 0) {
         const current = queue.shift();
         if (current.depth >= maxDepth)
@@ -75,19 +138,34 @@ export function associateEvents(seedIds, candidates, maxDepth, maxInjected, hopD
         const event = byId.get(current.id);
         if (!event)
             continue;
-        for (const link of event.links) {
-            if (visited.has(link.targetId))
+        const links = [...event.links].sort((a, b) => b.strength - a.strength);
+        for (const link of links) {
+            if (link.strength < MIN_LINK_STRENGTH)
                 continue;
             const target = byId.get(link.targetId);
             if (!target || target.archived)
                 continue;
+            const pathScore = current.score * hopDecay * link.strength;
+            const existing = found.get(link.targetId);
+            if (existing) {
+                existing.score = round(Math.min(1, existing.score + pathScore * MULTI_PATH_BONUS));
+                continue;
+            }
+            if (visited.has(link.targetId))
+                continue;
             visited.add(link.targetId);
-            const score = current.score * hopDecay * link.strength;
-            hits.push({ eventId: link.targetId, via: link, score: round(score) });
-            queue.push({ id: link.targetId, depth: current.depth + 1, score });
+            const hit = {
+                eventId: link.targetId,
+                via: link,
+                score: round(pathScore),
+                depth: current.depth + 1,
+                path: [...current.path, link.targetId],
+            };
+            found.set(link.targetId, hit);
+            queue.push({ id: link.targetId, depth: current.depth + 1, score: pathScore, path: hit.path });
         }
     }
-    return hits.sort((a, b) => b.score - a.score).slice(0, maxInjected);
+    return [...found.values()].sort((a, b) => b.score - a.score || a.depth - b.depth).slice(0, maxInjected);
 }
 /** 概率联想：从最近 30 天的非归档事件中随机挑 1 条，同种子可复现 */
 export function applySurprise(hits, candidates, config, rng, now) {
@@ -106,14 +184,34 @@ export function applySurprise(hits, candidates, config, rng, now) {
 }
 /**
  * 回忆重构的最小情绪位移。
- * padDistance 满量程约 0.5，原来卡 0.15（满量程 30%）在实际分布下永远达不到，
- * 真实库 emotion_history 因此 0 行；0.08 约等于 pleasure 变化 0.2 的量级。
+ *
+ * `padDistance` 满量程是 1（每维差满 2 才凑满），不是早期注释写的 0.5——按 0.5 估，
+ * 会把 0.08 误当成"满量程 16%"的宽松门槛。它实际等于"平均每维差 0.16"。
+ * 真实库标定：55 条事件两两距离 p50≈0.04、p90≈0.14，约四分之一的召回会过线。
+ * 想让回看记录更密就调小 `retrieval.reconstruct_distance`。
  */
 const RECONSTRUCT_MIN_DISTANCE = 0.08;
-/** 回忆重构：命中事件时按当前情绪追加一条 emotion_now_history，不覆盖 emotion_at_time */
-export function reconstructOnRecall(store, event, l5, now) {
+/**
+ * 同一条记忆的回看冷却：6 小时内不重复记。
+ *
+ * 光有距离门槛挡不住高频召回——一轮命中十几条、每条都写一行，两轮就能填满 24 行，
+ * 而 `emotionNowHistory` 上限只有 8 条，很快就被合并/挤掉，历史反而变短。
+ */
+const RECONSTRUCT_COOLDOWN_MINUTES = 360;
+/**
+ * 当前情绪与这条记忆"上次被想起时的感受"之间的位移。
+ * 没有回看记录时以事件发生当下的情绪为基准。
+ */
+export function recallDrift(event, emotion) {
     const last = event.emotionNowHistory[event.emotionNowHistory.length - 1]?.emotion ?? event.emotionAtTime;
-    if (padDistance(last, l5.emotion) < RECONSTRUCT_MIN_DISTANCE)
+    return padDistance(last, emotion);
+}
+/** 回忆重构：命中事件时按当前情绪追加一条 emotion_now_history，不覆盖 emotion_at_time */
+export function reconstructOnRecall(store, event, l5, now, minDistance = RECONSTRUCT_MIN_DISTANCE, cooldownMinutes = RECONSTRUCT_COOLDOWN_MINUTES) {
+    const lastEntry = event.emotionNowHistory[event.emotionNowHistory.length - 1];
+    if (lastEntry && daysBetween(lastEntry.at, now) * 1440 < cooldownMinutes)
+        return false;
+    if (recallDrift(event, l5.emotion) < minDistance)
         return false;
     store.appendEmotionHistory(event.id, {
         at: now,
@@ -122,7 +220,21 @@ export function reconstructOnRecall(store, event, l5, now) {
     });
     return true;
 }
-export function extractEvent(ctx, userText, assistantText, l5, rng) {
+/**
+ * 参与者按来源推导。
+ *
+ * 早期所有事件都写 ['self','user']，可"刷到一条视频""后台切了个窗口"这类单向输入里
+ * 根本没有用户参与：社交性项恒为 1 让显著性虚高，人物画像把这些噪声算成"一起做的事"，
+ * L2 亲密度的锚点跟着失真——一处口径错，三处下游一起歪。
+ * 单机游戏与外部内容暂时只记自己（还没有识别同场玩家的通道）。
+ */
+export function participantsFor(source, audience) {
+    if (source === 'chat' || source === 'qq' || source === 'douyin_dm') {
+        return ['self', audience ?? 'user'];
+    }
+    return ['self'];
+}
+export function extractEvent(ctx, userText, assistantText, l5, rng, source = 'chat') {
     const tags = TAG_LEXICON.filter((entry) => entry.words.some((word) => userText.includes(word))).map((entry) => entry.tag);
     const polarity = sentimentPolarity(userText);
     const importance = clamp01(0.3 + Math.min(0.3, userText.length / 300) + tags.length * 0.05 + Math.abs(polarity) * 0.1);
@@ -135,7 +247,7 @@ export function extractEvent(ctx, userText, assistantText, l5, rng) {
         summary: truncate(userText.replace(/\s+/g, ' ').trim(), 80) +
             (assistantText ? ` → ${truncate(assistantText.replace(/\s+/g, ' ').trim(), 40)}` : ''),
         tags: tags.length > 0 ? tags : ['对话'],
-        participants: ['self', ctx.audience ?? 'user'],
+        participants: participantsFor(source, ctx.audience),
         emotionAtTime: {
             ...l5.emotion,
             intensity: clamp01(Math.abs(l5.emotion.pleasure) * 0.6 + l5.stress * 0.4),
@@ -144,7 +256,7 @@ export function extractEvent(ctx, userText, assistantText, l5, rng) {
         importance,
         weight: importance,
         links: [],
-        source: 'chat',
+        source,
         createdAt: now,
         recallCount: 0,
         archived: false,

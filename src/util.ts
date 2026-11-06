@@ -203,6 +203,16 @@ function bigrams(text: string): Map<string, number> {
   return map;
 }
 
+/** FNV-1a 字符串哈希：把稳定字符串折成种子，同输入同输出 */
+export function hashText(value: string): number {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
 /** mulberry32，确定性随机源 */
 export function createRng(seed: number): () => number {
   let state = seed >>> 0;
@@ -231,6 +241,29 @@ export function daysBetween(from: string, to: string): number {
   const b = Date.parse(to);
   if (!Number.isFinite(a) || !Number.isFinite(b)) return 0;
   return Math.max(0, (b - a) / 86_400_000);
+}
+
+/**
+ * 相对时间（"3 小时前""昨天"），注入记忆行时用。
+ *
+ * 记忆里只有绝对时间戳，模型拿到一列标题和摘要，分不清是刚才还是上个月，
+ * 于是不敢说"上次"、也不会说"刚才"。给它一个相对锚点，指代才有落点。
+ * 一天以上按 24 小时折算（"昨天"= 24–48 小时前），不做日历日边界——注入不需要那么精确。
+ */
+export function relativeTime(from: string, to: string): string {
+  const fromMs = Date.parse(from);
+  const toMs = Date.parse(to);
+  if (!Number.isFinite(fromMs) || !Number.isFinite(toMs)) return '';
+  const minutes = Math.floor(Math.max(0, toMs - fromMs) / 60_000);
+  if (minutes < 1) return '刚刚';
+  if (minutes < 60) return `${minutes} 分钟前`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} 小时前`;
+  const days = Math.floor(hours / 24);
+  if (days === 1) return '昨天';
+  if (days < 30) return `${days} 天前`;
+  const months = Math.floor(days / 30);
+  return months < 12 ? `${months} 个月前` : `${Math.floor(months / 12)} 年前`;
 }
 
 export function truncate(text: string, max: number): string {
