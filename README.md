@@ -120,6 +120,9 @@ https://fastly.jsdelivr.net/gh/han0han0le0ni/dsh-daughter@main/market/index.json
 
 之后在「发现」里搜 `daughter` 安装即可。索引里每个版本都钉死了 commit，装到的是可复现的版本。
 
+> jsDelivr 对 `@main` 有分支级缓存，刚发版时索引可能还停在旧版本。要立刻拿到最新索引，用固定 commit 的地址（每次发版后把 `<sha>` 换成当次发布提交）：
+> `https://fastly.jsdelivr.net/gh/han0han0le0ni/dsh-daughter@<sha>/market/index.json`
+
 > 社区目录（`dsh-plugin-catalog`，也就是「发现」里默认那份）收录的是 npm 上的包，本插件发布到 npm 之后会被抓取；在那之前，请用上面的自带索引源。
 
 **2. 直接从 git 装**
