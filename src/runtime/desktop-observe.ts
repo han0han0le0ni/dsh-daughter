@@ -348,6 +348,36 @@ export function createDesktopObserveTool(options: DesktopObserveOptions = {}): T
   };
 }
 
+/** 前台窗口的最小形状；只取判断"忙不忙"需要的两个字段 */
+export interface DesktopForeground {
+  title?: string;
+  processName?: string;
+  processId?: number;
+}
+
+/**
+ * 只读前台窗口，不截图——给"她现在该不该开口"这类内部调度用的轻量探测。
+ *
+ * 与 `desktop_observe` 的区别：那个是给模型调用的工具（要截图、走附件服务），
+ * 这个不产生任何副作用，桥接没在跑就返回 null，不抛错也不打日志。
+ */
+export async function readForeground(options: DesktopObserveOptions = {}): Promise<DesktopForeground | null> {
+  const bridgeUrl = String(
+    options.bridgeUrl ?? process.env.DSH_DESKTOP_BRIDGE_URL ?? DEFAULT_BRIDGE_URL,
+  ).replace(/\/+$/, '');
+  const fetchImpl = options.fetchImpl ?? (globalThis.fetch as unknown as FetchLike | undefined);
+  if (!fetchImpl) return null;
+  try {
+    const payload = (await fetchJson(fetchImpl, `${bridgeUrl}/foreground`, options.timeoutMs ?? 1500)) as {
+      foreground?: DesktopForeground;
+    };
+    return payload.foreground ?? null;
+  } catch {
+    // 桥接没启动是常态，静默降级为"看不见屏幕"
+    return null;
+  }
+}
+
 export function registerDesktopObserveTool(
   ctx: {
     get(name: string): unknown;

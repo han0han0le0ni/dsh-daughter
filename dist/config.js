@@ -38,6 +38,64 @@ export const defaultConfig = {
         min_associated_score: 0.15,
         min_steps_to_learn: 2,
     },
+    motivation: {
+        enabled: true,
+        trait_threshold_gain: 0.25,
+        min_threshold: 0.05,
+        trait_signal_gain: 0.2,
+        familiarity: { k: 3, peak: 0.45, sigma: 0.35 },
+        memory: {
+            outcome_weight: 0.4,
+            emotion_weight: 0.3,
+            efficacy_weight: 0.3,
+            half_life_days: 30,
+            lookback_days: 30,
+        },
+        breaker: { fail_streak: 3, base_cooldown_min: 10, max_cooldown_min: 1440 },
+        emotion_override: {
+            safety_low: 0.35,
+            safety_low_offset: 0.1,
+            stress_high: 0.7,
+            stress_high_offset: 0.08,
+            pleasure_low: -0.25,
+            pleasure_low_offset: 0.06,
+            arousal_high: 0.4,
+            arousal_high_offset: -0.05,
+            fatigue_high: 0.8,
+            fatigue_high_offset: 0.08,
+            clamp_min: -0.15,
+            clamp_max: 0.2,
+        },
+        situation: { min_multiplier: 0.85, max_multiplier: 1.15 },
+        hold_ratio: 0.7,
+    },
+    speak: {
+        // 默认关闭：主动开口是自主行为，必须显式开启，不能装完就自己说话
+        enabled: false,
+        check_interval_min: 3,
+        min_idle_min: 45,
+        idle_half_min: 180,
+        trait_urge_gain: 1,
+        threshold: 0.62,
+        threshold_min: 0.4,
+        refractory_min: 90,
+        max_per_day: 5,
+        quiet_hours: [0, 7],
+        quiet_penalty: 0.35,
+        busy_penalty: 0.25,
+        hold_ratio: 0.75,
+        carry_step: 0.05,
+        carry_decay: 0.02,
+        carry_max: 0.25,
+        jitter: 0.04,
+    },
+    expression: {
+        enabled: true,
+        // 默认只发桌宠；要接别的应用，在 config.yaml 里加 pet / http / file 出口
+        sinks: [{ type: 'vpet' }],
+        // 出厂配置下若 dsh-pet 在跑，就让它接管，避免两套桌宠各弹一遍
+        prefer_pet: true,
+    },
     reflex: {
         enabled: true,
         max_match_ms: 5,
@@ -109,6 +167,13 @@ export const defaultConfig = {
     desktop: {
         enabled: true,
         bridge_url: 'http://127.0.0.1:47614',
+    },
+    douyin: {
+        enabled: true,
+        // 抖音插件的共享记忆库（QQ／抖音共用的那份），只读
+        memory_db: '~/.dsh/douyin-browser/memory/shared.sqlite',
+        poll_interval_min: 10,
+        max_items: 5,
     },
     filter: {
         enabled: true,
@@ -189,9 +254,6 @@ function warnUnsupported(config, logger) {
             backend: config.storage.backend,
         });
     }
-    if (config.desktop.enabled) {
-        logger.warn('dsh-daughter: desktop.enabled=true，但桌面端能力尚未实现（§14 里程碑 P9），配置值已忽略');
-    }
     if (!config.safety.diagnosis_labels_forbidden) {
         logger.warn('dsh-daughter: diagnosis_labels_forbidden=false，输出侧诊断词检查已关闭（不建议）');
     }
@@ -236,6 +298,137 @@ function normalizeConfig(config) {
     config.retrieval.expand_fulltext = config.retrieval.expand_fulltext !== false;
     config.retrieval.fulltext_excerpt_chars = Math.min(400, Math.max(40, Math.round(num(config.retrieval.fulltext_excerpt_chars, 120))));
     config.skills.min_steps_to_learn = Math.min(8, Math.max(2, Math.round(num(config.skills.min_steps_to_learn, 2))));
+    if (!config.motivation || typeof config.motivation !== 'object') {
+        config.motivation = structuredClone(defaultConfig.motivation);
+    }
+    const motivation = config.motivation;
+    const defaults = defaultConfig.motivation;
+    motivation.familiarity ??= { ...defaults.familiarity };
+    motivation.memory ??= { ...defaults.memory };
+    motivation.breaker ??= { ...defaults.breaker };
+    motivation.emotion_override ??= { ...defaults.emotion_override };
+    motivation.situation ??= { ...defaults.situation };
+    motivation.enabled = motivation.enabled !== false;
+    motivation.trait_threshold_gain = clampUnit(motivation.trait_threshold_gain, 0.25);
+    // 下限不能超过基础阈值，否则 skill 永远不可能 act
+    motivation.min_threshold = clampRange(motivation.min_threshold, 0, Math.max(0, Math.min(0.5, config.skills.min_main_score)), defaults.min_threshold);
+    // 上限 0.9：乘子最低留 0.1，避免人格把某个通道直接归零
+    motivation.trait_signal_gain = clampRange(motivation.trait_signal_gain, 0, 0.9, defaults.trait_signal_gain);
+    motivation.familiarity.k = Math.max(1, num(motivation.familiarity.k, 3));
+    motivation.familiarity.peak = clampUnit(motivation.familiarity.peak, 0.45);
+    motivation.familiarity.sigma = clampRange(motivation.familiarity.sigma, 0.05, 1, 0.35);
+    const memory = motivation.memory;
+    const memoryKeys = ['outcome_weight', 'emotion_weight', 'efficacy_weight'];
+    let memorySum = 0;
+    for (const key of memoryKeys) {
+        memory[key] = Math.max(0, num(memory[key], defaultConfig.motivation.memory[key]));
+        memorySum += memory[key];
+    }
+    if (!(memorySum > 0)) {
+        Object.assign(memory, defaultConfig.motivation.memory);
+    }
+    else {
+        for (const key of memoryKeys)
+            memory[key] = Number((memory[key] / memorySum).toFixed(4));
+    }
+    memory.half_life_days = clampRange(memory.half_life_days, 0.1, 3650, 30);
+    memory.lookback_days = Math.min(3650, Math.max(1, Math.round(num(memory.lookback_days, 30))));
+    const breaker = motivation.breaker;
+    breaker.fail_streak = Math.min(20, Math.max(1, Math.round(num(breaker.fail_streak, 3))));
+    breaker.base_cooldown_min = clampRange(breaker.base_cooldown_min, 0, 1440, 10);
+    breaker.max_cooldown_min = clampRange(breaker.max_cooldown_min, breaker.base_cooldown_min, 10080, 1440);
+    const override = motivation.emotion_override;
+    override.safety_low = clampUnit(override.safety_low, 0.35);
+    override.safety_low_offset = clampRange(override.safety_low_offset, -0.5, 0.5, 0.1);
+    override.stress_high = clampUnit(override.stress_high, 0.7);
+    override.stress_high_offset = clampRange(override.stress_high_offset, -0.5, 0.5, 0.08);
+    override.pleasure_low = clampRange(override.pleasure_low, -1, 1, -0.25);
+    override.pleasure_low_offset = clampRange(override.pleasure_low_offset, -0.5, 0.5, 0.06);
+    override.arousal_high = clampRange(override.arousal_high, -1, 1, 0.4);
+    override.arousal_high_offset = clampRange(override.arousal_high_offset, -0.5, 0.5, -0.05);
+    override.fatigue_high = clampUnit(override.fatigue_high, 0.8);
+    override.fatigue_high_offset = clampRange(override.fatigue_high_offset, -0.5, 0.5, 0.08);
+    override.clamp_min = clampRange(override.clamp_min, -0.5, 0.5, -0.15);
+    override.clamp_max = clampRange(override.clamp_max, override.clamp_min, 0.5, 0.2);
+    motivation.situation.min_multiplier = clampRange(motivation.situation.min_multiplier, 0.5, 2, 0.85);
+    motivation.situation.max_multiplier = clampRange(motivation.situation.max_multiplier, motivation.situation.min_multiplier, 2, 1.15);
+    motivation.hold_ratio = clampUnit(motivation.hold_ratio, 0.7);
+    if (!config.speak || typeof config.speak !== 'object') {
+        config.speak = structuredClone(defaultConfig.speak);
+    }
+    const speak = config.speak;
+    speak.enabled = speak.enabled !== false;
+    speak.check_interval_min = clampRange(speak.check_interval_min, 1, 120, 3);
+    speak.min_idle_min = clampRange(speak.min_idle_min, 1, 2880, 45);
+    speak.idle_half_min = clampRange(speak.idle_half_min, 5, 2880, 180);
+    speak.trait_urge_gain = clampRange(speak.trait_urge_gain, 0, 2, 1);
+    speak.threshold = clampRange(speak.threshold, 0.1, 1, 0.62);
+    // 下限不能高于基础阈值，否则等于把门槛整体抬高
+    speak.threshold_min = clampRange(speak.threshold_min, 0, speak.threshold, 0.4);
+    speak.refractory_min = clampRange(speak.refractory_min, 0, 10080, 90);
+    speak.max_per_day = Math.min(48, Math.max(0, Math.round(num(speak.max_per_day, 5))));
+    speak.quiet_penalty = clampRange(speak.quiet_penalty, 0, 1, 0.35);
+    speak.busy_penalty = clampRange(speak.busy_penalty, 0, 1, 0.25);
+    speak.hold_ratio = clampRange(speak.hold_ratio, 0.1, 1, 0.75);
+    speak.carry_step = clampRange(speak.carry_step, 0, 0.5, 0.05);
+    speak.carry_decay = clampRange(speak.carry_decay, 0, 0.5, 0.02);
+    speak.carry_max = clampRange(speak.carry_max, 0, 1, 0.25);
+    speak.jitter = clampRange(speak.jitter, 0, 0.3, 0.04);
+    // 安静时段：YAML 可能写成字符串或只有一个值，统一收敛成 [起, 止)
+    const quietRaw = Array.isArray(speak.quiet_hours) ? speak.quiet_hours : defaultConfig.speak.quiet_hours;
+    const quietStart = Math.min(23, Math.max(0, Math.round(num(quietRaw[0], 0))));
+    const quietEnd = Math.min(24, Math.max(0, Math.round(num(quietRaw[1], 7))));
+    speak.quiet_hours = [quietStart, quietEnd];
+    if (!config.expression || typeof config.expression !== 'object') {
+        config.expression = structuredClone(defaultConfig.expression);
+    }
+    const expression = config.expression;
+    expression.enabled = expression.enabled !== false;
+    expression.prefer_pet = expression.prefer_pet !== false;
+    const rawSinks = Array.isArray(expression.sinks) ? expression.sinks : [];
+    const sinks = [];
+    for (const item of rawSinks) {
+        if (!item || typeof item !== 'object')
+            continue;
+        const type = String(item.type ?? '');
+        if (type === 'vpet') {
+            sinks.push({ type: 'vpet' });
+            continue;
+        }
+        if (type === 'http') {
+            const url = typeof item.url === 'string' ? item.url.trim() : '';
+            if (!url)
+                continue;
+            sinks.push({ type: 'http', url, timeout_ms: clampRange(item.timeout_ms, 200, 30000, 3000) });
+            continue;
+        }
+        if (type === 'pet') {
+            // url 可省略：缺省由宿主在运行时用自己监听的端口拼出来，省得用户抄端口
+            const url = typeof item.url === 'string' ? item.url.trim() : '';
+            const petId = typeof item.pet === 'string' ? item.pet.trim() : '';
+            const route = typeof item.route === 'string' ? item.route.trim() : '';
+            sinks.push({
+                type: 'pet',
+                ...(url ? { url } : {}),
+                ...(petId ? { pet: petId } : {}),
+                ...(route ? { route } : {}),
+                timeout_ms: clampRange(item.timeout_ms, 200, 30000, 3000),
+                // 0 是合法值（只要动作不要文字），所以下限放 0
+                duration_ms: clampRange(item.duration_ms, 0, 60000, 10000),
+            });
+            continue;
+        }
+        if (type === 'file') {
+            const path = typeof item.path === 'string' ? item.path.trim() : '';
+            if (!path)
+                continue;
+            sinks.push({ type: 'file', path });
+            continue;
+        }
+        // 未知 type 静默丢弃，配置手滑不该拖垮整个插件
+    }
+    // 一个都没配成时退回桌宠：宁可只到气泡，也不要静默丢消息
+    expression.sinks = sinks.length > 0 ? sinks : [{ type: 'vpet' }];
     config.association.max_depth = Math.min(3, Math.max(1, Math.round(num(config.association.max_depth, 2))));
     config.budget.max_total_tokens = Math.max(200, Math.round(num(config.budget.max_total_tokens, 3000)));
     config.safety.thresholds.stress_level1 = num(config.safety.thresholds.stress_level1, 0.7);
@@ -265,6 +458,12 @@ function normalizeConfig(config) {
     bodyLink.fatigue_weight = clampUnit(bodyLink.fatigue_weight, 0.5);
     bodyLink.stress_weight = clampUnit(bodyLink.stress_weight, 0.3);
     bodyLink.max_influence = clampUnit(bodyLink.max_influence, 0.6);
+    const douyin = config.douyin;
+    douyin.enabled = douyin.enabled !== false;
+    douyin.memory_db = typeof douyin.memory_db === 'string' ? douyin.memory_db.trim() : '';
+    // 1 分钟一次已经比自己刷得还勤，再快只是空读；上限一天一次的量级足够追平
+    douyin.poll_interval_min = Math.min(1440, Math.max(1, Math.round(num(douyin.poll_interval_min, 10))));
+    douyin.max_items = Math.min(20, Math.max(1, Math.round(num(douyin.max_items, 5))));
     return config;
 }
 function num(value, fallback) {
@@ -273,4 +472,7 @@ function num(value, fallback) {
 function clampUnit(value, fallback) {
     const number = num(value, fallback);
     return Math.min(1, Math.max(0, number));
+}
+function clampRange(value, min, max, fallback) {
+    return Math.min(max, Math.max(min, num(value, fallback)));
 }

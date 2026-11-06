@@ -2,10 +2,14 @@
 
 - 时间：2026-11-04 首测，2026-11-05 复核，**2026-11-06 复跑**（本轮数值以复跑为准）
 - 方式：`npm run check:link`（`scripts/link-check.ts`），临时数据目录 + 临时端口（`DSH_DAUGHTER_BRIDGE_PORT`，默认 47912），不碰真实存档
-- 结果：**PASS 18 / WARN 0 / FAIL 0**；`npm test` **112 项全绿**；`tsc --noEmit` 无错；`dist` 新鲜度检查 PASS
-- 前置：2026-11-05 复核前 `dist` 曾落后于 `src`，首跑 PASS 17 / WARN 1，执行 `npm run build` 后转绿；2026-11-06 复跑时 `dist` 已晚于全部 `src`，未重新 build
+- 结果：**PASS 18 / WARN 0 / FAIL 0**；`npm test` **145 项全绿**；`tsc --noEmit` 无错；`dist` 新鲜度检查 PASS
+- 前置：2026-11-05 复核前 `dist` 曾落后于 `src`，首跑 PASS 17 / WARN 1，执行 `npm run build` 后转绿；2026-11-06 复跑时 `dist` 已晚于全部 `src`；行为动机模块落地后再次 `npm run build`，`dist` 17:50:26 晚于 `src` 17:49:39，check:link 复跑仍 PASS 18
 
 > 2026-11-06 新增性格演化模块（`tests/personality.test.ts` 9 项），不影响 18 项自检结论。
+>
+> 同轮新增行为动机模块（`tests/motivation.test.ts` 14 项，测试 112 → 126）：决策层改用阈值 × 分数两段式判定，人格走「阈值偏移 + 方向舵」双通路，零信号恒不触发。18 项自检结论不变。
+>
+> 随后新增主动开口模块（`tests/speak.test.ts` 19 项，测试 126 → 145）：没人说话时按思念/人格/情绪/关系决定要不要自己开口，欲言又止会攒劲，出口抽象成 `SpeakSink` 投递到桌宠气泡；该模块**默认关闭**，需显式开启。另外接入 `connectors/desktop` 的前台窗口做场景感知（会议/游戏/写代码时抬门槛），顺带删除了 `desktop.enabled` 那条"能力尚未实现"的过期告警。18 项自检结论不变。
 
 ## 一、适配性（8 项）
 

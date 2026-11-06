@@ -55,6 +55,8 @@ export declare class Store {
     /** 检索候选集：按权重与时间排序的非归档事件 */
     listCandidates(includeArchived: boolean, limit: number): EventRecord[];
     listAllEvents(): EventRecord[];
+    /** 时间窗口内的非归档事件：动机的情绪记忆只用近段事件，避免全表扫描 */
+    listRecentEvents(since: string, limit?: number): EventRecord[];
     updateEventMutable(id: string, patch: Partial<Pick<EventRecord, 'weight' | 'lastRecalledAt' | 'recallCount' | 'archived' | 'links' | 'salience' | 'mergedCount'>>): void;
     /** 归档事件落盘到 archive/：完整记录留档，索引里只保留 archived 标记与薄字段 */
     archiveEvent(event: EventRecord): void;

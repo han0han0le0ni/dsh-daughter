@@ -256,6 +256,10 @@ export interface SkillCard {
   version: number;
   status: SkillStatus;
   lastUsedAt?: ISOTime;
+  /** 连续失败次数：成功即清零，用于习得性无助熔断 */
+  failStreak?: number;
+  /** 熔断解除时间：此前该技能只避不做，冷却按失败次数指数增长 */
+  breakerUntil?: ISOTime;
   updatedAt: ISOTime;
   schemaVersion: 1;
 }
@@ -367,10 +371,39 @@ export interface AssociationHit {
   score: number;
 }
 
+/** 动机信号通道：人格只调这些通道的阈值，不直接改分数 */
+export type SignalChannel = 'social' | 'achievement' | 'exploration' | 'safety' | 'harmony';
+
+export type MotivationDecision = 'act' | 'hold' | 'avoid';
+
+/** 单个技能的动机评分明细，便于调试与可复现审计 */
+export interface MotivationBreakdown {
+  skillId: string;
+  channel: SignalChannel;
+  /** 基础信号：文本相似度 + 关键词命中 */
+  signal: number;
+  /** 人格对阈值的偏移（正数更难触发） */
+  personalityOffset: number;
+  /** 情绪对阈值的偏移 */
+  emotionOffset: number;
+  /** 最终生效阈值 */
+  threshold: number;
+  familiarityGain: number;
+  memoryGain: number;
+  situationMultiplier: number;
+  /** 人格对分数的增益（方向舵：>1 表示该通道更想动，<1 表示更不想动） */
+  traitSignalGain: number;
+  score: number;
+  decision: MotivationDecision;
+  breakerActive: boolean;
+}
+
 export interface SkillActivation {
   main?: SkillCard;
   associated: SkillCard[];
   confidence: number;
+  /** 动机评分明细（关闭 motivation 时为空） */
+  breakdown?: MotivationBreakdown[];
 }
 
 export interface DaughterPlugin {
@@ -445,6 +478,12 @@ export interface DaughterPlugin {
     recovered: boolean;
   }>;
 
+  /**
+   * 主动开口评估：没人说话时她想不想开口。
+   * `jitter` 由调用方给随机值（-1..1），避免行为像定时任务。
+   */
+  speakPlan(input: { characterId: string; now: ISOTime; jitter?: number }): Promise<SpeakPlan | null>;
+
   /** 星图面板：按当前库实时重算并落盘，返回节点/边/星系计数 */
   starMap(characterId: string, now: ISOTime): { nodes: number; edges: number; galaxies: number };
 
@@ -475,7 +514,168 @@ export interface DaughterMetrics {
   window: number;
 }
 
+/* -------------------------------- 主动开口 -------------------------------- */
+
+/** 她为什么想说——决定文案池，也解释得清动机来源 */
+export type SpeakReason = 'miss' | 'care' | 'share' | 'worry' | 'bored';
+
+/**
+ * act：说；hold：想但忍住了（累积压力）；silent：没到那份上。
+ * hold 是拟人的关键——真实的主动开口前面通常有几次欲言又止。
+ */
+export type SpeakDecision = 'act' | 'hold' | 'silent';
+
+export interface SpeakPlan {
+  decision: SpeakDecision;
+  /** 想说话的强度 0..1 */
+  urge: number;
+  /** 本轮阈值，受人格/情绪/时段影响 */
+  threshold: number;
+  reason: SpeakReason;
+  /** 本轮结束后的"憋着"压力，调用方写回存储 */
+  carry: number;
+  /** decision=act 时的气泡文案 */
+  text?: string;
+  /** 本次用的文案下标，调用方可写回以避开连续重复 */
+  lineIndex?: number;
+}
+
+/**
+ * 主动开口的参数。默认高频检查、低频开口：
+ * 每 `check_interval_min` 分钟评估一次，但真开口要同时过冷却、日上限与安静时段。
+ */
+export interface SpeakConfig {
+  enabled: boolean;
+  /** 评估间隔（分钟），不是开口间隔 */
+  check_interval_min: number;
+  /** 至少沉默多久才开始考虑开口 */
+  min_idle_min: number;
+  /** 思念累积的半饱和时间：idle = half 时想说话的强度约 0.5 */
+  idle_half_min: number;
+  /** 人格对"想说话"强度的放大倍数（0 = 人格不影响，1 = 原始权重） */
+  trait_urge_gain: number;
+  /** 基础阈值 */
+  threshold: number;
+  /** 阈值下限，防止极端人格把门槛压到"见谁都说话" */
+  threshold_min: number;
+  /** 上次主动开口后的强制沉默，冷却期内一律 silent */
+  refractory_min: number;
+  /** 每天最多主动开口几次 */
+  max_per_day: number;
+  /** 安静时段 [起, 止)，按 0–24 小时。深夜不打扰 */
+  quiet_hours: number[];
+  /** 安静时段抬升的阈值 */
+  quiet_penalty: number;
+  /** 用户正在开会/游戏/写代码时抬升的阈值（乘以场景权重） */
+  busy_penalty: number;
+  /** 想但忍住的门槛比例：urge ≥ ratio × threshold 记 hold */
+  hold_ratio: number;
+  /** 一次 hold 累积的压力 */
+  carry_step: number;
+  /** 未达 hold 时压力自然消退的速率 */
+  carry_decay: number;
+  /** 压力上限，避免憋久了必然开口 */
+  carry_max: number;
+  /** 外部注入的抖动幅度，避免像定时任务一样精确 */
+  jitter: number;
+}
+
+/* -------------------------------- 表达出口 -------------------------------- */
+
+/**
+ * 出口配置。`vpet` 走游戏的事件队列；`pet` 走 DSH 内置桌宠（dsh-pet）的路由；
+ * `http` 把 JSON POST 给任意应用；`file` 追加 JSONL，供本地进程 tail。
+ * 可同时启用多个。
+ */
+export interface ExpressionSinkConfig {
+  type: 'vpet' | 'pet' | 'http' | 'file';
+  /** http / pet 出口的目标地址；pet 缺省用宿主自己监听的端口 */
+  url?: string;
+  /** file 出口路径，相对路径按插件根目录解析 */
+  path?: string;
+  /** 请求超时（毫秒） */
+  timeout_ms?: number;
+  /** pet 出口：要投给哪只桌宠，缺省 main（dsh-pet 的默认宠物） */
+  pet?: string;
+  /** pet 出口：气泡停留时长（毫秒），0 = 只要动画不要文字 */
+  duration_ms?: number;
+  /** pet 出口：dsh-pet 的路由段覆盖，缺省 /dsh-pet-7340（插件升级改段时用） */
+  route?: string;
+}
+
+export interface ExpressionConfig {
+  enabled: boolean;
+  /** 出口列表；留空或全部非法时退回桌宠，避免"开了却没人收到" */
+  sinks: ExpressionSinkConfig[];
+  /**
+   * 出口只配了出厂默认的 `vpet` 时，若探测到 DSH 内置桌宠（dsh-pet）在跑，
+   * 就让它接管表达——两套桌宠同时开只会把同一句话各弹一遍。
+   * 想守着 VPet 就把这里设为 false。
+   */
+  prefer_pet: boolean;
+}
+
 /* -------------------------------- 配置 -------------------------------- */
+
+/**
+ * 动机算法参数。所有数值可配置，关闭 enabled 即退回旧的相似度打分。
+ */
+export interface MotivationConfig {
+  enabled: boolean;
+  /** 人格对阈值的最大影响强度（0 表示人格不影响决策） */
+  trait_threshold_gain: number;
+  /** 阈值下限：人格/情绪偏移再大也不会让阈值低于此值（0 表示不设下限） */
+  min_threshold: number;
+  /**
+   * 人格对分数的增益上限（0 表示人格不影响分数）。
+   * 与 trait_threshold_gain 分工：那个管"多少力才能推开门"，这个管"哪个方向更想走"。
+   */
+  trait_signal_gain: number;
+  /** 熟悉度倒 U：exposure = uses / (uses + k) */
+  familiarity: {
+    k: number;
+    peak: number;
+    sigma: number;
+  };
+  /** 记忆三路径权重与时间衰减 */
+  memory: {
+    outcome_weight: number;
+    emotion_weight: number;
+    efficacy_weight: number;
+    /** 结果预期按上次使用时间衰减的半衰期（天） */
+    half_life_days: number;
+    /** 情绪记忆只看最近多少天的事件 */
+    lookback_days: number;
+  };
+  /** 习得性无助熔断 */
+  breaker: {
+    fail_streak: number;
+    base_cooldown_min: number;
+    max_cooldown_min: number;
+  };
+  /** 情绪覆盖：阈值偏移的触发条件与幅度 */
+  emotion_override: {
+    safety_low: number;
+    safety_low_offset: number;
+    stress_high: number;
+    stress_high_offset: number;
+    pleasure_low: number;
+    pleasure_low_offset: number;
+    arousal_high: number;
+    arousal_high_offset: number;
+    fatigue_high: number;
+    fatigue_high_offset: number;
+    clamp_min: number;
+    clamp_max: number;
+  };
+  /** 情境乘子：社交通道按亲密度放大/缩小，其余通道影响减半 */
+  situation: {
+    min_multiplier: number;
+    max_multiplier: number;
+  };
+  /** hold 与阈值之比：score ≥ ratio * threshold 时保留但不主动 */
+  hold_ratio: number;
+}
 
 export interface ScoreWeights {
   semantic: number;
@@ -518,6 +718,15 @@ export interface DaughterConfig {
     /** 一轮里至少用到几个工具才沉淀成技能草稿（<2 视为 2） */
     min_steps_to_learn: number;
   };
+  /**
+   * 行为动机：决策层用动机评分替代单一文本相似度。
+   * 阈值由人格与情绪偏移决定，分数由熟悉度、记忆与情境乘子决定。
+   */
+  motivation: MotivationConfig;
+  /** 主动开口：空下来多久会忍不住说话。与 motivation 共用同一套人格/情绪输入 */
+  speak: SpeakConfig;
+  /** 表达出口：她主动说的话发给谁（游戏桌宠 / HTTP 应用 / JSONL） */
+  expression: ExpressionConfig;
   reflex: {
     enabled: boolean;
     max_match_ms: number;
@@ -589,6 +798,16 @@ export interface DaughterConfig {
   desktop: {
     enabled: boolean;
     bridge_url: string;
+  };
+  /** 抖音联动：只读 dsh-douyin-browser-local 的共享记忆库，把刷到的内容记成她的事件 */
+  douyin: {
+    enabled: boolean;
+    /** 共享记忆库路径，支持 `~`；留空用 ~/.dsh/douyin-browser/memory/shared.sqlite */
+    memory_db: string;
+    /** 多久拉一次新记录（分钟） */
+    poll_interval_min: number;
+    /** 单次最多入库几条，避免一口气灌满事件流 */
+    max_items: number;
   };
   /** 认知滤网：写入门控 / 习惯化 / 忘却（见 §8.5） */
   filter: {

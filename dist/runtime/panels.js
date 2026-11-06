@@ -1,4 +1,5 @@
 import { DEFAULT_L1, DEFAULT_L2, DEFAULT_L3, DEFAULT_L4 } from '../store.js';
+import { localDayKey } from './speak.js';
 const TEMPERAMENT_LABEL = {
     slow_warmup: '慢热',
     eager: '急切',
@@ -289,6 +290,38 @@ function evolutionEntries(store, limit = 10) {
         return { at: entry.at, target: entry.target, reason: entry.reason, changes };
     });
 }
+/**
+ * 主动开口的账本：今天说了几次、几次想说但忍住、憋着多少劲、最近说过什么。
+ * 这些全在 `speak.*` 元数据里，面板只读不回写。
+ */
+function speakGroup(store, now) {
+    const day = localDayKey(now);
+    const params = [
+        { key: 'speak.today', label: '今天主动开口', value: store.getMetaNumber(`speak.count.${day}`, 0), kind: 'number' },
+        { key: 'speak.hold', label: '今天欲言又止', value: store.getMetaNumber(`speak.hold.${day}`, 0), kind: 'number' },
+        { key: 'speak.carry', label: '憋着的劲', value: Number(store.getMetaNumber('speak.carry', 0).toFixed(3)), kind: 'number' },
+    ];
+    const lastAt = store.getMeta('speak.lastAt');
+    if (lastAt)
+        params.push({ key: 'speak.lastAt', label: '上次开口', value: lastAt, kind: 'text' });
+    const raw = store.getMeta('speak.history');
+    if (raw) {
+        try {
+            const history = JSON.parse(raw);
+            const lines = history
+                .slice(-5)
+                .reverse()
+                .map((item) => String(item.text ?? ''))
+                .filter(Boolean);
+            if (lines.length > 0)
+                params.push({ key: 'speak.history', label: '最近说过', value: lines, kind: 'list' });
+        }
+        catch {
+            // 历史坏了就当没有，不影响面板其它分组
+        }
+    }
+    return { id: 'speak', title: '主动开口', subtitle: '没人说话时她自己开口的账本', params };
+}
 export function buildStarPanels(store, now, counts) {
     const persona = store.loadPersona();
     return {
@@ -299,7 +332,7 @@ export function buildStarPanels(store, now, counts) {
             l4Group(persona.l4, DEFAULT_L4),
             ...(evidenceGroup(persona.l3) ? [evidenceGroup(persona.l3)] : []),
         ],
-        runtime: [...runtimeGroups(store, now), programMemoryGroup(store), storageGroup(store, counts)],
+        runtime: [...runtimeGroups(store, now), speakGroup(store, now), programMemoryGroup(store), storageGroup(store, counts)],
         evolution: evolutionEntries(store),
         series: store
             .listL5Sessions()

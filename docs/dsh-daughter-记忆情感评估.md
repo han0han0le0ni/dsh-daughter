@@ -10,7 +10,7 @@
 >
 > 仍待补的是**能力面 + 标定**而非机制：连接器 3/7（QQ/抖音/Minecraft/单机）、R-07 跨工作区隐私字段、L3 的 `biasWeights` / `copingStrategies` 仍无写入路径（设计里本来就没有 `values/beliefs/interests` 字段）、情绪识别仍是 22 词表（正负各 11 条）；真实库还没有修复后的对话，所以 §3 的量程与重构改动尚未在真实数据上复测。
 >
-> **2026-11-06 复核**：当前 `memory.db` 已重置（events 0 条、`emotion_history` 0 行），本文 §2 / §3 的 662 / 64 / 598 与量程数字均为 **2026-11-05 历史快照**，需新对话后重测；同期新增性格演化模块（`tests/personality.test.ts` 9 项），`npm test` 现为 **112 项全绿**，`check:link` 仍 PASS 18。
+> **2026-11-06 复核**：当前 `memory.db` 已重置（events 0 条、`emotion_history` 0 行），本文 §2 / §3 的 662 / 64 / 598 与量程数字均为 **2026-11-05 历史快照**，需新对话后重测；同期新增性格演化模块（`tests/personality.test.ts` 9 项）、行为动机模块（`tests/motivation.test.ts` 14 项）与主动开口模块（`tests/speak.test.ts` 19 项），`npm test` 现为 **145 项全绿**，`check:link` 仍 PASS 18。
 
 ## 0. 三层评分
 

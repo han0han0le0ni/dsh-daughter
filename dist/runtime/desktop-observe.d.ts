@@ -72,6 +72,19 @@ export interface DesktopObserveValue {
     image?: ImageAttachmentRef;
 }
 export declare function createDesktopObserveTool(options?: DesktopObserveOptions): ToolDefinitionLike;
+/** 前台窗口的最小形状；只取判断"忙不忙"需要的两个字段 */
+export interface DesktopForeground {
+    title?: string;
+    processName?: string;
+    processId?: number;
+}
+/**
+ * 只读前台窗口，不截图——给"她现在该不该开口"这类内部调度用的轻量探测。
+ *
+ * 与 `desktop_observe` 的区别：那个是给模型调用的工具（要截图、走附件服务），
+ * 这个不产生任何副作用，桥接没在跑就返回 null，不抛错也不打日志。
+ */
+export declare function readForeground(options?: DesktopObserveOptions): Promise<DesktopForeground | null>;
 export declare function registerDesktopObserveTool(ctx: {
     get(name: string): unknown;
     logger?: Partial<Logger>;

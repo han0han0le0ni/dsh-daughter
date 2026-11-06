@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { loadConfig, mergeConfig } from './config.js';
 import { createDaughterPlugin } from './index.js';
 import { normalizeBodySignal } from './runtime/body-link.js';
@@ -9,6 +9,9 @@ import { registerDesktopObserveTool } from './runtime/desktop-observe.js';
 import { registerDesktopInputTool } from './runtime/desktop-input.js';
 import { MoodMotionGate } from './runtime/mood-motion.js';
 import { VpetBridgeState, type VpetEvent } from './runtime/vpet-events.js';
+import { buildExpressionSinks, dispatchExpression, type ExpressionSink } from './runtime/expression.js';
+import { readDouyinMemory, renderDouyinEventText, resolveDouyinDbPath } from './runtime/douyin-link.js';
+import { PET_MOOD_ANIM, createPetAnimSink, createPetSink, petBaseUrlOf, petWorkAnimFor, probePet } from './runtime/pet-link.js';
 import { registerVpetControlTool } from './runtime/vpet-control.js';
 import type {
   DaughterConfig,
@@ -82,6 +85,8 @@ interface HostCtx {
   effect(fn: () => (() => void) | void, label?: string): () => void;
   emit?(name: string, payload: unknown): void;
   webServer?: {
+    /** 宿主实际监听的端口（配置写 0 时由系统分配），dsh-pet 出口靠它拼本机地址 */
+    port?: number;
     register(route: {
       kind: 'exact' | 'prefix';
       path: string;
@@ -130,13 +135,32 @@ const EXTERNAL_SESSION_ID = 'vpet-bridge';
 const vpetState = new VpetBridgeState();
 let lastMoodMotion: { band: string; graph: string; at: number } | null = null;
 
+/**
+ * dsh-pet 工作动作转发器：宿主在 dsh-pet 接管后设置，queueEvent 里顺手调一下。
+ * 模块级共享是为了让所有事件产生点（thinking/tool/reply/error）走同一个汇聚口，
+ * 不必在每个调用点重复判断"是不是该投给桌宠插件"。
+ */
+let petWorkForward: ((kind: string) => void) | null = null;
+
 const MAX_BUBBLE_LINES = 3;
 const MAX_BUBBLE_CHARS = 120;
+
+/**
+ * 桌宠出口：沿用原来的事件队列，文本进气泡。
+ * 出口本身由 `config.expression.sinks` 决定，这里只是其中一种实现。
+ */
+const vpetExpressionSink: ExpressionSink = (event) => {
+  if (event.text) queueEvent({ kind: 'reply', text: event.text });
+};
 
 function queueEvent(event: Omit<VpetEvent, 'seq'>): void {
   const text = typeof event.text === 'string' ? plainText(event.text) : '';
   if (text) event.text = text.length > MAX_BUBBLE_CHARS ? `${text.slice(0, MAX_BUBBLE_CHARS - 2)}…` : text;
   else delete event.text;
+  // dsh-pet 接管时，把 thinking/tool/reply/error 也点播成它的工作状态动画；
+  // 仍照写 VPet 队列（无消费者时不产生任何副作用，不影响既有桥接）。
+  const kind = String(event.kind ?? '');
+  if (kind && petWorkForward) petWorkForward(kind);
   vpetState.push(event);
 }
 
@@ -241,6 +265,22 @@ function renderBlocks(blocks: PromptBlock[]): string {
     .filter((block) => block.text.trim().length > 0)
     .map((block) => block.text.trim())
     .join('\n\n');
+}
+
+/**
+ * 取宿主实际监听的端口。`get` 在服务缺失时会抛，这里一律按"拿不到"处理——
+ * 端口只用于拼 dsh-pet 的地址，缺了最多少一个出口，不该连累插件装载。
+ */
+function resolveWebServerPort(ctx: HostCtx): number | undefined {
+  const direct = Number(ctx.webServer?.port);
+  if (Number.isFinite(direct) && direct > 0) return direct;
+  try {
+    const service = ctx.get('webServer') as { port?: unknown } | undefined;
+    const port = Number(service?.port);
+    return Number.isFinite(port) && port > 0 ? port : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function hostLogger(ctx: HostCtx): Logger {
@@ -489,6 +529,42 @@ export function createHost(
   const logger = hostLogger(ctx);
   const base = loadConfig(pluginRoot, logger);
   const config: DaughterConfig = mergeConfig(base, rawConfig);
+  // dsh-pet 挂在宿主自己的 webServer 上，端口只有宿主知道——从服务里取，别让用户抄端口
+  const petBaseUrl = petBaseUrlOf(resolveWebServerPort(ctx));
+  const petConfig = config.expression.sinks.find((item) => item.type === 'pet');
+  // 表达出口：DSH 内置桌宠 / 游戏桌宠 / HTTP 应用 / JSONL 文件，可同时开，任一挂掉不影响其它
+  const expressionSinks = config.expression.enabled
+    ? buildExpressionSinks(config.expression.sinks, {
+        vpetSink: vpetExpressionSink,
+        logger,
+        resolvePath: (path) => (isAbsolute(path) ? path : join(pluginRoot, path)),
+        petBaseUrl,
+      })
+    : [];
+  // 动作出口与说话出口共用同一只宠物、同一个基地址与同一个路由段，避免各投各的；
+  // 配置里写了 url 就以它为准（反代 / 远程桌面壳），否则用本机端口
+  const petEndpointBase = petConfig?.url?.trim() || petBaseUrl || null;
+  const petAnimSink = petEndpointBase
+    ? createPetAnimSink({ baseUrl: petEndpointBase, petId: petConfig?.pet, route: petConfig?.route })
+    : null;
+  /** dsh-pet 是否在接她的表达：配了可用的 pet 出口，或启动探测后由它接管 */
+  let petTakesOver = petConfig !== undefined && petAnimSink !== null;
+  // 工作动作转发器：dsh-pet 接管后，把 thinking/tool/reply/error 点播成它的 workStatus 动画。
+  // 显式配了 pet 出口时 createHost 阶段就挂上；让位（探测接管）成功后再补挂一次。
+  const syncPetWorkForward = (): void => {
+    if (petTakesOver && petAnimSink) {
+      petWorkForward = (kind) => {
+        const anim = petWorkAnimFor(kind);
+        if (!anim) return;
+        petAnimSink(anim).catch((error) => {
+          logger.warn('dsh-daughter: 桌宠工作动作点播失败', { anim, kind, error: String(error) });
+        });
+      };
+    } else {
+      petWorkForward = null;
+    }
+  };
+  syncPetWorkForward();
   const plugin = createDaughterPlugin({
     pluginRoot,
     config,
@@ -593,11 +669,24 @@ export function createHost(
           const playerBusy = vpetState.playerActive();
           const moodMotion = playerBusy ? null : moodMotionGate.next(l5, Date.now());
           if (moodMotion) {
-            queueEvent({ kind: 'motion', graph: moodMotion.graph, loops: moodMotion.loops });
-            lastMoodMotion = { band: moodMotion.band, graph: moodMotion.graph, at: Date.now() };
+            // 两个桌宠的动作词汇表不通用：VPet 认 GraphType（Say/Touch_Head/Sleep），
+            // dsh-pet 认自己素材里的动画名，所以按接管方选一套，不混着发。
+            const anim = PET_MOOD_ANIM[moodMotion.band];
+            if (petTakesOver && petAnimSink) {
+              petAnimSink(anim).catch((error) => {
+                logger.warn('dsh-daughter: 桌宠动作点播失败', { anim, error: String(error) });
+              });
+            } else {
+              queueEvent({ kind: 'motion', graph: moodMotion.graph, loops: moodMotion.loops });
+            }
+            lastMoodMotion = {
+              band: moodMotion.band,
+              graph: petTakesOver ? anim : moodMotion.graph,
+              at: Date.now(),
+            };
             logger.debug('dsh-daughter: 情绪动作', {
               band: moodMotion.band,
-              graph: moodMotion.graph,
+              graph: lastMoodMotion.graph,
               reason: moodMotion.reason,
             });
           }
@@ -715,12 +804,119 @@ export function createHost(
 
   if (typeof ctx.effect === 'function') {
     ctx.effect(() => {
+      // 出厂配置只有 vpet：探一下 dsh-pet 在不在，在就让它接管出口。这就是「让位」——
+      // 两套桌宠同时开只会把同一句话各弹一遍，而 VPet 卸掉之后 vpet 出口根本没人消费。
+      // 探测异步、失败即忽略，不阻塞插件装载；用户显式配了 vpet 或关掉 prefer_pet 时不动。
+      const factoryVpetOnly =
+        config.expression.sinks.length === 1 && config.expression.sinks[0]?.type === 'vpet';
+      if (config.expression.enabled && config.expression.prefer_pet && petBaseUrl && factoryVpetOnly) {
+        // 插件加载顺序不保证：dsh-pet 可能比我们晚一步注册路由，所以失败再试两次，
+        // 总共约 5 秒内结案。之后就当它不在，不长期空转探测。
+        const attempt = (left: number): void => {
+          void probePet({ baseUrl: petBaseUrl, petId: petConfig?.pet, route: petConfig?.route, timeoutMs: 1200 })
+            .then((alive) => {
+              if (alive) {
+                expressionSinks.length = 0;
+                expressionSinks.push(
+                  createPetSink({ baseUrl: petBaseUrl, petId: petConfig?.pet, route: petConfig?.route }),
+                );
+                petTakesOver = true;
+                syncPetWorkForward();
+                logger.info('dsh-daughter: 检测到 dsh-pet，表达出口已交给它', { baseUrl: petBaseUrl });
+                return;
+              }
+              if (left <= 0) return;
+              const retry = setTimeout(() => attempt(left - 1), 2000);
+              if (typeof (retry as { unref?: () => void }).unref === 'function') retry.unref();
+            })
+            .catch((error) => logger.debug('dsh-daughter: 桌宠探测失败', { error: String(error) }));
+        };
+        attempt(2);
+      }
+
+      // 抖音联动：只读它的共享记忆库，把新刷到的内容写成她的事件。
+      // 游标只在内存里推进；首次启动或长时间关机后从"最近一天"重新对齐，
+      // 免得把一周前刷的视频当成"刚看到的"。
+      let douyinCursor = 0;
+      const douyinEnabled = config.douyin.enabled;
+      const douyinDb = resolveDouyinDbPath(config.douyin.memory_db);
+      const pullDouyin = async (): Promise<void> => {
+        const nowMs = Date.now();
+        if (douyinCursor === 0 || nowMs - douyinCursor > 24 * 60 * 60 * 1000) {
+          douyinCursor = nowMs - 24 * 60 * 60 * 1000;
+        }
+        const result = await readDouyinMemory({
+          dbPath: douyinDb,
+          sinceMs: douyinCursor,
+          limit: config.douyin.max_items,
+        });
+        if (!result.ok) {
+          // 没装抖音插件 / 库还没建 / 运行环境没有 sqlite，都走这里，只留一条 debug
+          logger.debug('dsh-daughter: 抖音记忆读取失败', { reason: result.reason });
+          return;
+        }
+        if (result.items.length === 0) return;
+        const pc = pluginContext({ id: EXTERNAL_SESSION_ID }, 0);
+        for (const item of result.items) {
+          douyinCursor = Math.max(douyinCursor, item.updatedAt);
+          const text = renderDouyinEventText(item);
+          if (!text) continue;
+          try {
+            await plugin.ingestExternalEvent({ ctx: pc, text, source: 'douyin_content' });
+          } catch (error) {
+            logger.warn('dsh-daughter: 抖音内容入库失败', { error: String(error) });
+          }
+        }
+        logger.debug('dsh-daughter: 抖音内容已入库', { count: result.items.length });
+      };
+      const douyinTimer = douyinEnabled
+        ? setInterval(() => void pullDouyin(), Math.max(60_000, config.douyin.poll_interval_min * 60_000))
+        : null;
+      if (douyinTimer && typeof (douyinTimer as { unref?: () => void }).unref === 'function') douyinTimer.unref();
+      // 启动 20 秒后先拉一次：刚开机时主人往往正在刷
+      const douyinKick = douyinEnabled ? setTimeout(() => void pullDouyin(), 20_000) : null;
+      if (douyinKick && typeof (douyinKick as { unref?: () => void }).unref === 'function') douyinKick.unref();
+
       const timer = setInterval(() => {
         plugin
           .tick({ characterId: config.character_id, now: new Date().toISOString() })
           .catch((error) => logger.warn('dsh-daughter: 定时维护失败', { error: String(error) }));
       }, TICK_INTERVAL_MS);
       if (typeof (timer as { unref?: () => void }).unref === 'function') timer.unref();
+
+      // 主动开口用独立节拍：维护半小时一次够用，但"她什么时候开口"需要更细的粒度。
+      // 关闭时不注册定时器——关掉的功能不该留一个空转的 timer。
+      const speakTimer = config.speak.enabled
+        ? setInterval(() => {
+            const now = new Date().toISOString();
+            plugin
+              .speakPlan({ characterId: config.character_id, now, jitter: Math.random() * 2 - 1 })
+              .then(async (plan) => {
+                // hold 是她"想说但忍住了"，只留在存储里累积压力，不打扰任何人
+                if (!plan || plan.decision !== 'act' || !plan.text) return;
+                const result = await dispatchExpression(
+                  {
+                    kind: 'speak',
+                    characterId: config.character_id,
+                    at: now,
+                    text: plan.text,
+                    reason: plan.reason,
+                    intensity: Number(plan.urge.toFixed(3)),
+                  },
+                  expressionSinks,
+                );
+                if (result.failed > 0) {
+                  logger.warn('dsh-daughter: 表达投递部分失败', {
+                    failed: result.failed,
+                    delivered: result.delivered,
+                    errors: result.errors,
+                  });
+                }
+              })
+              .catch((error) => logger.warn('dsh-daughter: 主动开口评估失败', { error: String(error) }));
+          }, Math.max(60_000, config.speak.check_interval_min * 60_000))
+        : null;
+      if (speakTimer && typeof (speakTimer as { unref?: () => void }).unref === 'function') speakTimer.unref();
 
       const offStarMap = registerStarMapPanel(ctx, plugin, pluginRoot, config.character_id, logger);
 
@@ -745,6 +941,10 @@ export function createHost(
 
       return () => {
         clearInterval(timer);
+        if (speakTimer) clearInterval(speakTimer);
+        if (douyinTimer) clearInterval(douyinTimer);
+        if (douyinKick) clearTimeout(douyinKick);
+        petWorkForward = null;
         offStarMap();
         offVpetControl();
         offDesktopObserve();

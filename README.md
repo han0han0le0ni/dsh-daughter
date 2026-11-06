@@ -74,7 +74,7 @@ dotnet build -c Release -p:VPetDir="E:\SteamLibrary\steamapps\common\VPet"
 | --- | --- | --- |
 | `connectors/android` | ADB | 受限动作 + 前台事件，需 `adb` 可用 |
 | `connectors/desktop` | `127.0.0.1:47614` | 窗口/前台/媒体查询、截图、抽帧、ffmpeg 推流、输入注入 |
-| 外部消息通用入口 | `POST /connectors/<source>/ingest` | QQ / 抖音 / Minecraft / 单机暂走这里，来源白名单校验 |
+| 外部消息通用入口 | `POST /connectors/<source>/ingest` | QQ / Minecraft / 单机暂走这里，来源白名单校验；抖音改走共享记忆只读拉取（见「抖音联动」） |
 
 ## 能力
 
@@ -84,6 +84,8 @@ dotnet build -c Release -p:VPetDir="E:\SteamLibrary\steamapps\common\VPet"
 | 记忆 | 摘要层 + 全文层分离；SQLite FTS5 trigram + Dice 双路；五维加权（语义/近因/权重/情绪/链接）；一跳二跳联想 + 概率联想；衰减、归档、情绪历史合并 |
 | 认知滤网 | 写入前四类裁决（屏蔽 / 丢弃 / 合并 / 放行）+ 来源可信度降权 + 显著性 + 习惯化签名 + 定期忘却；存量治理脚本 |
 | 技能与资产 | `draft → active → frozen → deprecated`；按技能形态自动固化为 MAC / CON / CMB / MOT，失败两次自动回退 |
+| 行为动机 | 人格双通路（降阈值 + 方向舵）、熟悉度倒 U、记忆三路径、情绪覆盖、情境乘子；分数与阈值比较后给出 `act / hold / avoid`；失败熔断；零信号恒不触发 |
+| 主动开口 | **默认关闭**。开启后按思念/人格/情绪/关系决定要不要自己开口；欲言又止会攒劲；安静时段、冷却期、日上限兜底；模板文案经可插拔出口投递到桌宠气泡 |
 | 反射 | 关键词 / 正则 / 状态 / 事件四类匹配，毫秒级，不调用模型（短路默认关闭） |
 | 安全 | 三档降级 + 滞回 + 写类工具熔断 + 输出侧诊断词检查；只描述强度与持续时间 |
 | 注入预算 | 硬上限 3000 tokens，按优先级裁剪，`constraint` 永不裁 |
@@ -114,7 +116,7 @@ dsh plugin add git+https://github.com/han0han0le0ni/dsh-daughter.git
 ```bash
 npm install
 npm run build        # tsc → dist/
-npm test             # 112 项
+npm test             # 145 项
 npm run check:link   # 适配性 / 联动性自检，18 项
 ```
 
@@ -127,8 +129,8 @@ npm run check:link   # 适配性 / 联动性自检，18 项
 ## 目录
 
 ```text
-src/                插件主体（21 个 TS 文件）
-  runtime/          记忆、人格、状态、安全、滤网、反射、可观测性
+src/                插件主体（23 个 TS 文件）
+  runtime/          记忆、人格、状态、动机、主动开口、安全、滤网、反射、可观测性
 scripts/            自检与存量治理（link-check / filter-sweep）
 connectors/
   vpet/             VPet MOD 源码（mod-src/，10 个 .cs + info.lps）与桥接脚本（bridge.mjs）
@@ -136,7 +138,7 @@ connectors/
   android/          ADB 受限动作
   desktop/          桌面观察与输入
 web/                星图页面（纯静态）
-tests/              14 个测试文件
+tests/              16 个测试文件
 docs/               设计文档、实现核对、评估、检测报告
 ```
 
@@ -151,9 +153,79 @@ docs/               设计文档、实现核对、评估、检测报告
 
 出生时五维按有界区间抽样，并把结果写入 `innate` 锚点；同角色同种子可复现。日常闲聊不动人格，只有累积/关键事件才按通道推动五维，任一项不超出锚点 `±0.6`。依恋底色出生只抽安全/焦虑/回避，混乱型只能靠经历演化。面板只展示证据与数值，不输出"你是 X 型"的结论。完整规则见设计文档 §4.8。
 
+## 行为动机
+
+决策层不再用"文本相似度过线"就执行技能，而是给每个技能算一个动机分，再和阈值比。两层结构，职责不重叠：
+
+```text
+阈值侧（够不够力）   skills.min_main_score + 人格偏移 + 情绪偏移 → 不低于 min_threshold
+分数侧（想不想走）   signal ×(熟悉度)×(记忆)×(情境)×(方向舵)  → 0..1
+决策                 熔断 → avoid；零信号 → avoid；score ≥ 阈值 → act；≥ 0.7×阈值 → hold
+```
+
+**人格走两条独立通路**，这是这套设计的关键：
+
+| 通路 | 参数 | 作用 | 类比 |
+| --- | --- | --- | --- |
+| 阈值偏移 | `trait_threshold_gain` | 五维按通道映射成阈值的升降 | 门有多重 |
+| 方向舵 | `trait_signal_gain` | 五维按通道映射成分数乘子 `1±g` | 更想走哪条路 |
+
+只有阈值通路时，人格无法影响"几个候选技能里选哪个"，只能影响"一个都别选"——所以补了方向舵。方向舵是**乘子不是加项**：`signal=0` 时乘什么都不会高于 0，零信号永远不会被凭空变成行动。
+
+其余因子：
+
+- **熟悉度倒 U**：`exposure = uses/(uses+k)`，太少犹豫、太多厌倦，峰值在 `peak`。
+- **记忆三路径**：结果预期（按 `lastUsedAt` 半衰）／情绪记忆（近 `lookback_days` 天相关事件的愉悦度）／自我效能（L3 自我价值），权重归一化。
+- **情绪覆盖**：安全感低、压力高、心情低、疲劳高 → 更谨慎；高唤醒 → 更容易动。总偏移被 `clamp_min/max` 截断。
+- **情境乘子**：关系深度 + 子人格披露度，社交通道吃满，其余通道折半。
+- **失败熔断**：连续失败 `fail_streak` 次进入指数冷却，期间只 `avoid`，成功即清零。
+
+每个技能的因子都留在 `MotivationBreakdown` 里（`signal / personalityOffset / emotionOffset / threshold / familiarityGain / memoryGain / situationMultiplier / traitSignalGain / score / decision`），面板与日志可以逐项复算。`motivation.enabled = false` 时退回旧的相似度打分，便于对照。数值含义与取值范围见 `config.yaml` 注释。
+
+## 主动开口
+
+没人说话的时候，她会不会自己开口。这条链和上面的动机层是分开的：动机回答"这个技能该不该用"，需要用户输入；主动开口回答"这会儿想不想说话"，信号来自沉默时长而不是文本。
+
+```text
+强度侧（想不想）   思念累积 + 人格 + 情绪 + 关系 + 上一轮攒下的"憋劲"
+门槛侧（合不合适） 基础阈值 + 安静时段 + 压力
+决策               冷却期/日上限 → silent；urge ≥ 阈值 → act；≥ 0.75×阈值 → hold
+```
+
+拟人靠三件事：
+
+- **思念有饱和**：`idle / (idle + 180min)`。沉默一小时只有 0.25，十小时到 0.77——不会两小时没回就急，但一整天没动静会明显想说话。
+- **欲言又止**：`hold` 不是失败。它把"这次的憋劲"累进 `carry`，攒够下一次才真开口。所以会看到"她想了好几次，最后才说一句"。
+- **时机不对就不说**：安静时段（默认 0–7 点）抬门槛 0.35，压力大再抬 0.06；刚说过话有 90 分钟冷却；一天最多 5 次。她说完话也算"刚联系过"，不会因为对方没回就靠沉默累积刷屏。
+
+文案按动机分类取池（想念 / 关心 / 分享 / 不安 / 无聊），最近 5 句会被避开。**目前是模板，不是模型生成**——接模型后可替换这一层，其余决策逻辑不用动。
+
+**默认是关闭的**（`speak.enabled: false`）。"她会自己开口"属于自主行为，装完插件不该自动开始——要用就改成 `true`，并确认桌宠在跑。
+
+**能看见屏幕时会先看场景。** `connectors/desktop` 桥接在跑时，每次评估先读一眼前台窗口，按打扰成本抬门槛：开会 ×0.85、游戏 ×0.7、写代码 ×0.4、其它 ×0.15（再乘 `busy_penalty 0.25`）。桥接没启动就静默跳过——不会因为探测失败变成一整天不说话的哑巴。
+
+投递走可插拔的表达出口（`expression.sinks`，类型 `ExpressionSink`）：`pet` 投给 DSH 内置桌宠 dsh-pet（气泡走 `/dsh-pet-7340/broadcast`，情绪动作走 `/anim`），`vpet` 把文本塞进 VPet 的 `/vpet/events` 队列（`kind: reply`），`http` 把事件 JSON POST 给任意应用，`file` 追加 JSONL 供本地 `tail -f`。多个出口可同时开，并发投递、单个出口抛错不影响其他；决策层只负责"想说什么"，往哪发由配置决定，加一个出口不用动决策。
+
+**换了桌宠不用改代码。** `pet` 出口的地址由宿主自己拼（`webServer` 端口 + dsh-pet 的路由段），不需要填端口；出厂配置只有 `vpet` 时，启动会探一下 dsh-pet 在不在，在就让它接管（`prefer_pet: true`），免得两套桌宠把同一句话各弹一遍。VPet 卸掉之后，`vpet` 出口只是往没人消费的队列里写，不会再出现在屏幕上。
+
+**干活时桌宠也会动。** dsh-pet 接管后，她的 thinking / tool / reply / error 会点播成 dsh-pet 内置的工作状态动画（`events.workStatus`）：思考冒泡、忙碌点按、清点归档、垂头叹气冒汗。这些动画是 dsh-pet 自带的，不用从 VPet 搬素材——两边的动作词汇表不通用，VPet 认 `GraphType`（Say/Touch_Head/Sleep），dsh-pet 认它素材目录里的中文名，所以按接管方各选各的。
+
+**说过的话留痕。** 星图面板的「主动开口」分组能翻到：今天开口几次、几次欲言又止、憋着多少劲、最近说过哪几句。没有这块的话，她说什么只存在于气泡队列里，测完什么都看不到。
+
+没有桌宠在轮询时，消息只会入队、不会出现在聊天记录里——插件没有往宿主会话里插消息的权限。
+
+## 抖音联动
+
+装了 `dsh-douyin-browser-local` 时，她能知道你刷了什么。不是靠对方推送——那个插件没有对外事件或 webhook——而是**只读**它的共享记忆库（`~/.dsh/douyin-browser/memory/shared.sqlite`）里 `origin='video'` 的条目，把新出现的记录写成自己的一条事件（`source: douyin_content`），之后走同一套认知滤网、衰减与联想。
+
+- **只读连接**：不写对方的库，观看记录也不会被反向同步回去
+- **游标在内存里推进**：首次启动与长时间关机后只补最近 24 小时，不把上周刷的当成"刚看到的"
+- **失败即静默**：库不存在、表结构变了、运行环境没有 `node:sqlite`，都只是"这次没有新内容"，不影响其它功能
+- 参数在 `config.yaml` 的 `douyin` 段：`enabled` / `memory_db` / `poll_interval_min`（默认 10 分钟）/ `max_items`（单次最多 5 条）
+
 ## 当前状态
 
-P0–P8 已落地并核对（当前 `npm test` **112 项全绿**，`check:link` PASS 18）；P9 外部连接 3/7（VPet 桌宠 / Android / 桌面已通，QQ、抖音、Minecraft、单机待适配器）。已知短板与后续优先级见上面两份文档。
+P0–P8 已落地并核对（当前 `npm test` **171 项全绿**，`check:link` PASS 18）；P9 外部连接 4/7（VPet 桌宠 / Android / 桌面已通，抖音走只读共享记忆拉取，QQ、Minecraft、单机待适配器）。已知短板与后续优先级见上面两份文档。
 
 ## 隐私
 

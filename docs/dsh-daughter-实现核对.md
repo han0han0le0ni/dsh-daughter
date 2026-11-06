@@ -1,14 +1,14 @@
 # dsh-daughter 实现核对（v0.5）
 
 - 核对对象：`dsh-daughter-design.md`（v0.5，2026-11-06）
-- 核对基准：`dsh-daughter/` 当前源码，2026-11-06 复核 —— `npm test` **112 项全绿**、`npm run check:link` **PASS 18 / WARN 0 / FAIL 0**、`tsc --noEmit` 无错、`dist` 新鲜度检查 PASS（未重跑 build，避免改动运行中的产物）
-- 演进：v0.2（76 项）→ 加固轮（87）→ 桌宠弱耦合（94）→ 移除语音（85）→ 认知滤网（97）→ 情感闭环修复（103）→ 性格多样性演化（**112**）
+- 核对基准：`dsh-daughter/` 当前源码，2026-11-06 复核（动机 + 主动开口 + 出口抽象 + 桌面场景感知后五次复跑）—— `npm test` **145 项全绿**、`npm run check:link` **PASS 18 / WARN 0 / FAIL 0**、`tsc --noEmit` 无错、`dist` 已重跑 build
+- 演进：v0.2（76 项）→ 加固轮（87）→ 桌宠弱耦合（94）→ 移除语音（85）→ 认知滤网（97）→ 情感闭环修复（103）→ 性格多样性演化（112）→ 行为动机（126）→ 主动开口（141）→ 出口抽象（143）→ 场景感知（**145**）
 
 ## 0. 完成度
 
 | 范围 | v0.2 | v0.3（11-04） | v0.4（11-05） | 现在（11-06） |
 | --- | --- | --- | --- | --- |
-| 主体 P0–P8（§4–§13） | 约 88% | 约 98% | 约 99% | **约 99%**：滤网、观感、情感闭环、性格演化均已落地 |
+| 主体 P0–P8（§4–§13） | 约 88% | 约 98% | 约 99% | **约 99%**：滤网、观感、情感闭环、性格演化、行为动机均已落地 |
 | 桌宠联动 | 表达强、感知单向 | 双向弱耦合闭环 | 双向弱耦合闭环（另有真实 bridge 心跳证据） | 双向弱耦合闭环 |
 | P9 外部连接 | 3/7 | 3/7 | 3/7 | **3/7**（桌宠 / Android / 桌面；QQ、抖音、MC、单机未动） |
 | 整体 | 约 85% | 约 93% | 约 95% | **约 96%**（P9 仍是唯一拖拽项） |
@@ -44,6 +44,32 @@
 - **叙事与证据**：自我叙事三轴 + `lockedAxes` 只记事实；人格证据链上限 200，面板只展示事实与数值，不输出"你是 X 型"标签。
 - **验证**：`tests/personality.test.ts` 9 项；测试 103 → **112**。真实库已新建角色并写入 `innate`，但尚无关键事件，漂移/叙事/证据链尚未在真实语料上触发。
 
+### 1.5 行为动机（决策层，`src/runtime/motivation.ts` 新增）
+
+- **两段式判定**：`threshold = min_main_score + 人格偏移 + 情绪偏移`（下限 `min_threshold`）；`score = signal × 熟悉度 × 记忆 × 情境 × 方向舵`；判定顺序为 `熔断 → avoid`、`零信号 → avoid`、`score ≥ threshold → act`、`≥ hold_ratio × threshold → hold`。
+- **人格双通路**：`trait_threshold_gain` 调阈值（"门有多重"），`trait_signal_gain` 给分数乘子 `1±g`（"更想走哪条路"）。只有前者时，人格只能否决候选、不能决定选哪个——方向舵补上了这条边。
+- **实测对照**（同一句"聊天 计划"，两个候选技能）：中性人格 social 0.2426 / achievement 0.1977（双 hold）→ 外向宜人拉满 social 0.2911 act、achievement 0.1581 avoid → 尽责拉满则两者排序完全翻转。
+- **零信号收口**：`signal = 0` 直接判 `avoid`，不再依赖阈值兜底。修复前极端人格会把阈值压到 `0.00`，`0 ≥ 0` 成立而误判 `act`；现由 `min_threshold 0.05` + 零信号短路双保险，且方向舵是乘子，`signal=0` 时乘什么都不会高于 0。
+- **其余因子**：熟悉度倒 U（`peak 0.45`）、记忆三路径（结果预期按 `lastUsedAt` 半衰 30d / 情绪记忆回看 30d / 自我效能取 L3 `selfWorth`）、情绪覆盖（总偏移 clamp −0.15~0.20）、情境乘子（社交通道满额、其余折半）、失败熔断（`fail_streak 3` 起，10 分钟起指数翻倍，成功清零）。
+- **可审计**：`MotivationBreakdown` 保留 10 个因子，`confidence` 取 main 的 `score`；`motivation.enabled = false` 退回纯相似度打分。
+- **验证**：`tests/motivation.test.ts` 14 项；测试 112 → **126**。
+
+### 1.6 主动开口（`src/runtime/speak.ts` 新增）
+
+没人说话时她会不会自己开口。与动机层分工明确：动机要 `userText`，这条链接的是沉默时长。
+
+- **强度侧 / 门槛侧分离**：`urge` = 思念累积 + 人格 + 情绪 + 关系 + 上一轮 `carry`；`threshold` = 基础值 + 安静时段 + 压力。人格只进 `urge`，不进 `threshold`——"想不想"和"合不合适"是两件事，不互相污染。
+- **思念饱和**：`idle / (idle + idle_half_min 180)`。1 小时 0.25、3 小时 0.5、10 小时 0.77，不线性。
+- **欲言又止**：`urge ≥ threshold×hold_ratio` 记 `hold`，把 `carry_step 0.05` 累进存储；下次评估带着这份"憋劲"，所以"想几次才说一句"能自然出现。`carry` 有上限 0.25，憋久了不会必然开口。
+- **兜底**：冷却 `refractory_min 90`、日上限 `max_per_day 5`、安静时段 `[0,7)` 抬门槛 0.35。她说完话也算"刚联系过"，避免靠沉默累积刷屏。
+- **默认关闭**：`speak.enabled: false`。自主开口属于"她会自己做事"，装完插件不该自动开始；开启需显式改配置。
+- **出口抽象**：`SpeakSink` 数组 + `dispatchSpeak` 并发投递、单出口失败隔离。当前只有一个 sink（桌宠气泡 `kind: reply`），宿主将来开放主动消息时加 sink 即可，决策层不动。无桌宠轮询时消息只入队，不会进聊天记录（插件无宿主会话写入权限）。
+- **实测时间线**（9:00 聊过、全天没人理、jitter=0）：安静内向 2 次 / 欲言又止 6 次（14:45 首次）；外向黏人 5 次 / 15 次（11:15 首次，撞日上限）；焦虑型 4 次，全部归为 `worry` 池。
+- **场景感知**：`readForeground` 只读 `/foreground`（不截图、不产生附件），按前台进程/标题算打扰成本——会议 0.85 / 游戏 0.7 / 写代码 0.4 / 其它 0.15，乘 `busy_penalty 0.25` 抬门槛。桥接不可用返回 null、按"看不见屏幕"处理，不会因探测失败变成整天沉默。
+- **可审计**：`speak.history`（最近 10 句，含 reason）、`speak.count.<日期>`、`speak.hold.<日期>`、`speak.carry` 全部落进 meta；星图面板新增「主动开口」分组只读展示，今天开口数 / 欲言又止数 / 憋劲 / 上次开口 / 最近说过。写之前这块是黑盒——内容只进气泡队列，测完无从复查。
+- **顺带修的**：`config.desktop.enabled` 原本会打印"桌面端能力尚未实现，配置值已忽略"——该能力早已实现，这条告警属过期提示，已删除。
+- **验证**：`tests/speak.test.ts` 19 项；测试 126 → **145**。
+
 ## 2. 代码落点（v0.5 本轮新增/改动）
 
 | 文件 | 改动 |
@@ -63,6 +89,20 @@
 | `src/runtime/panels.ts` | 面板新增自我叙事 / 人格证据 / 善恶观展示，只给事实不输出类型标签 |
 | `config.yaml` | 新增 `personality.*` 段（drift_cap / 阈值 / step / repair / initial / evidence_cap） |
 | `tests/filter.test.ts` / `tests/emotion.test.ts` / `tests/personality.test.ts`（新增） | 12 + 6 + 9 项 |
+| `src/runtime/motivation.ts`（新增） | `scoreSkills` 纯函数打分：人格双通路、熟悉度倒 U、记忆三路径、情绪覆盖、情境乘子、零信号收口、熔断；`computeThreshold` 兜 `min_threshold` |
+| `src/runtime/content.ts` | `activateSkills` 改用动机决策选 main / associated；`motivation.enabled = false` 时回退 `activateBySimilarity` |
+| `src/runtime/maintenance.ts` | `bumpSkill` 失败累计 → `breakerUntil` 指数冷却，成功清零 |
+| `src/types.ts` | 新增 `SignalChannel` / `MotivationDecision` / `MotivationBreakdown` / `MotivationConfig` |
+| `config.yaml` / `src/config.ts` | 新增 `motivation.*`：`trait_threshold_gain` / `min_threshold` / `trait_signal_gain` / `familiarity` / `memory` / `breaker` / `emotion_override` / `situation` / `hold_ratio`，全部带范围收敛 |
+| `tests/motivation.test.ts`（新增） | 14 项 |
+| `src/runtime/speak.ts`（新增） | 主动开口纯函数：思念饱和曲线、人格/情绪/关系进强度、时段/压力进门槛、hold 攒劲、文案池与避重；`SpeakSink` + `dispatchSpeak` 出口抽象 |
+| `src/runtime/desktop-observe.ts` | 新增 `readForeground`：只读 `/foreground`、不截图、桥接不可用时静默返回 null，供主动开口判断场景 |
+| `src/index.ts` | 新增 `speakPlan()`：取最近活跃会话算沉默时长、读写 `speak.*` 元数据（lastAt / carry / 日计数 / 文案避重 / 历史账本）、探测前台场景、act 后落日志 |
+| `src/runtime/panels.ts` | 新增「主动开口」分组：今天开口数 / 欲言又止数 / 憋劲 / 上次开口 / 最近说过，只读 |
+| `src/host.ts` | 独立 `speakTimer`（默认 3 分钟）调 `speakPlan`，act 时 `queueEvent({ kind: 'reply' })` 投递到气泡 |
+| `src/types.ts` | 新增 `SpeakReason` / `SpeakDecision` / `SpeakPlan` / `SpeakConfig`；`DaughterPlugin` 增 `speakPlan` |
+| `config.yaml` / `src/config.ts` | 新增 `speak.*` 整段（15 个参数，全部范围收敛），安静时段归一化为 `[起, 止)` |
+| `tests/speak.test.ts`（新增） | 19 项 |
 
 ## 3. 仍然缺的
 
@@ -72,6 +112,11 @@
 | 情绪识别深度 | 仍是 22 词表（正负各 11 条），无否定 / 程度 / 转折 / 对象 | 扩词表或改模型打标（R-08） |
 | L3 写入路径 | `biasWeights` 与 `copingStrategies` 没有新增条目的写入逻辑；`evolvePersona` 每天只做归一化，真正会变的是 `defenseMaturity` | 从冲突事件 / 反复出现的应对方式里沉淀 |
 | 性格演化标定 | 出生先验与 `critical_step` 只有单测，真实语料尚未出现关键事件 | 用真实关系/成就事件校准 `repair` 与阈值，观察 `drift_cap` 是否过松 |
+| 动机缺习惯层 | 构思里的「线索→行为→奖励」自动化通路未实现，所有行为仍需当轮输入提供信号；`maturity_threshold_automate` 只是冻结技能、`filter.habituation` 只是消息去重，都不是行为习惯 | 用 `SkillCard` 的成功历史做线索权重，或引入 idle / 情境触发 |
+| 动机参数未标定 | `min_threshold 0.05` 与 `trait_signal_gain 0.2` 均为经验值，没有真实 signal 分布作依据 | 真实对话跑一批后统计 signal 分位，再定地板与乘子上限 |
+| 主动开口文案是模板 | 5 个动机池共 40 句，无模型生成，长期会显得重复 | 接模型时替换 `pickSpeakLine` 一层，决策逻辑不动 |
+| 主动消息进不了聊天记录 | 插件只有"响应"权限，`PluginContext` 无发起消息接口；出口虽已抽成 `SpeakSink`，但现成实现只能投桌宠气泡 | 等宿主开放主动消息后，加一个 sink 即可，无需改决策层 |
+| 主动开口参数未标定 | `idle_half_min 180`、`threshold 0.62`、`max_per_day 5` 同样没有真实使用数据支撑 | 跑真实使用一周后看开口频次与被打断比例再调 |
 | 记忆冲突标记 | `EventLink.kind` 有 `contradiction` 枚举，无写入与展示 | 新旧事件矛盾时双向标记，不覆盖事实 |
 | 重构阈值分位数 | 现为绝对阈值 0.08 | 按情绪分布 P90 自适应 |
 | 长边衰减 / 图定期重建 | 只做了 cap 与摘链 | 连接强度随时间衰减 |
@@ -112,6 +157,7 @@
 - 新增 §14.8「性格多样性演化轮次」：9 项实现与验证对照
 - §15：新增 R-10（双路径口径）、D-06（L1 写回约束待评审）
 - §16：勾选性格演化、D-01~D-06、L1 双路径；L3 表述改为"只归一化、无新增条目"；真实数据待办注明库已重置
+- 动机模块：`README.md` 新增「行为动机」章节（两层结构、人格双通路、各因子、审计字段）与能力表一行；安装 / 目录 / 当前状态三处数字同步为 126 项、22 个 TS、15 个测试文件
 
 `README.md`：
 

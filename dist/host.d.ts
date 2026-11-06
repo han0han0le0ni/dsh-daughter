@@ -11,6 +11,8 @@ interface HostCtx {
     effect(fn: () => (() => void) | void, label?: string): () => void;
     emit?(name: string, payload: unknown): void;
     webServer?: {
+        /** 宿主实际监听的端口（配置写 0 时由系统分配），dsh-pet 出口靠它拼本机地址 */
+        port?: number;
         register(route: {
             kind: 'exact' | 'prefix';
             path: string;

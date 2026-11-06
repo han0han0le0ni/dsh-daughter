@@ -321,6 +321,16 @@ export class Store {
     return rows.map((row) => this.mapRow(row));
   }
 
+  /** 时间窗口内的非归档事件：动机的情绪记忆只用近段事件，避免全表扫描 */
+  listRecentEvents(since: string, limit = 200): EventRecord[] {
+    const rows = this.db
+      .prepare(
+        'SELECT * FROM events WHERE character_id = ? AND archived = 0 AND created_at >= ? ORDER BY created_at DESC LIMIT ?',
+      )
+      .all(this.characterId, since, limit) as unknown as EventRow[];
+    return rows.map((row) => this.mapRow(row));
+  }
+
   updateEventMutable(
     id: string,
     patch: Partial<

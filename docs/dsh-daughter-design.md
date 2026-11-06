@@ -5,7 +5,7 @@
 | 插件名 | dsh-daughter |
 | 文档类型 | 设计文档 / 技术评审稿（不含实现代码） |
 | 目标运行形态 | TypeScript / Node 插件 |
-| 状态 | 待评审（P0–P8 已落地并核对，P9 3/7；核对基准：`npm test` 112 项、`npm run check:link` 18 项全绿、`tsc --noEmit` 无错） |
+| 状态 | 待评审（P0–P8 已落地并核对，P9 3/7；核对基准：`npm test` 145 项、`npm run check:link` 18 项全绿、`tsc --noEmit` 无错） |
 | 日期 | 2026-11-02（v0.2 2026-11-04；v0.3 加固 + 桌宠弱耦合 2026-11-04；v0.4 认知滤网 + 星图观感 + 记忆情感闭环 2026-11-05；v0.5 性格多样性演化 2026-11-06） |
 | 适用范围 | 人格陪伴、长期记忆、技能与资产、条件反射、多应用连接 |
 
@@ -1261,7 +1261,7 @@ vpet:
 
 ### 14.1 实现核对（截至 2026-11-06 v0.5）
 
-核对基准：`src/` 当前构建（**112 项测试 + 18 项自检全绿**，2026-11-06 性格多样性演化后）+ VPet MOD 实测 + Android ADB / 电脑桌面本地模拟。
+核对基准：`src/` 当前构建（**145 项测试 + 18 项自检全绿**，2026-11-06 性格演化、行为动机与主动开口之后）+ VPet MOD 实测 + Android ADB / 电脑桌面本地模拟。
 
 | 项 | 设计表述 | 实现现状 | 处置 |
 | --- | --- | --- | --- |
@@ -1464,6 +1464,43 @@ vpet:
 
 验证基线：`tests/personality.test.ts` **9 项**；`npm test` 从 103 增至 **112 项全绿**，`tsc --noEmit` 无错，`check:link` 仍 PASS 18。
 
+### 14.9 行为动机（决策层）
+
+决策层不再用"文本相似度过 `min_main_score` 就执行"，改成两段式判定：阈值侧管"够不够力"，分数侧管"想不想走"。人格走**两条独立通路**——`trait_threshold_gain` 抬降门槛，`trait_signal_gain` 给分数乘子 `1±g`。只保留前者时，人格只能否决候选、无法决定选哪个，方向舵就是补这条边。
+
+| # | 要点 | 代码落点 | 验证 |
+| --- | --- | --- | --- |
+| 1 | 阈值 = `min_main_score` + 人格偏移 + 情绪偏移，且有 `min_threshold` 下限 | `computeThreshold` | 极端人格下阈值仍 ≥ 0.05，不被压到 0 |
+| 2 | 分数 = `signal` × 熟悉度 × 记忆 × 情境 × 方向舵 | `scoreSkills` | 每个因子各一条方向性用例 |
+| 3 | 人格双通路：门槛与乘子分开 | `computePersonalityOffset` / `computeTraitSignalGain` | 同一句子下外向者 social 分数更高，通道排序可翻转 |
+| 4 | 零信号恒不触发（短路 + 地板双保险） | `decide` 的 `silent` 分支 | `min_threshold=0` 时仍判 `avoid` |
+| 5 | 熔断优先：连续失败进指数冷却，期间只 `avoid` | `isBreakerActive` / `bumpSkill` | 3 次失败 10min、4 次 20min，成功清零 |
+| 6 | 全因子可审计 | `MotivationBreakdown` | 10 个因子逐项留在决策明细里，面板可复算 |
+
+验证基线：`tests/motivation.test.ts` **14 项**；`npm test` 从 112 增至 **126 项全绿**，`tsc --noEmit` 无错，`check:link` 仍 PASS 18。
+
+> 已知缺口：构思里的「习惯」层（线索→行为→奖励的自动化通路）尚未实现，行为仍需当轮输入提供信号；`min_threshold` 与 `trait_signal_gain` 是经验值，未经真实语料标定。
+
+### 14.10 主动开口
+
+没人说话时她会不会自己开口。与 §14.9 分工明确：那边要 `userText` 才能算分，这条链接的是沉默时长。
+
+| # | 要点 | 代码落点 | 验证 |
+| --- | --- | --- | --- |
+| 1 | 强度与门槛分离：人格/情绪/关系/思念进 `urge`，时段/压力进 `threshold` | `computeSpeakUrge` / `computeSpeakThreshold` | 外向者 urge 更高，但 threshold 不变 |
+| 2 | 思念按 `idle/(idle+180)` 饱和，不线性 | `idleUrge` | 1h → 0.25，3h → 0.5，10h → 0.77 |
+| 3 | 想说但忍住会攒 `carry`，下次更容易跨线 | `evaluateSpeak` 的 `hold` 分支 | 同状态第二次评估转为 act |
+| 4 | 冷却期、日上限、安静时段三重兜底 | `speakPlan` / `computeSpeakThreshold` | 冷却内与超上限均 silent，深夜不 act |
+| 5 | 文案按动机分类取池，避开最近 5 句 | `pickSpeakLine` | 连续两次不出同句 |
+| 6 | act 经 `SpeakSink` 数组投递，当前实现是桌宠气泡 | `dispatchSpeak` / `host.ts` 的 `speakTimer` | 时间线模拟：内向 2 次 / 外向 5 次 / 焦虑 4 次 |
+| 7 | 默认关闭，必须显式开启 | `speak.enabled: false` | 出厂配置下 `evaluateSpeak` 恒为 silent |
+| 8 | 看得见屏幕时按场景抬门槛（会议/游戏/写代码/其它） | `readForeground` / `foregroundBusy` | 会议时即便空闲也不 act；桥接不可用不受罚 |
+| 9 | 说过的话与憋回去的话都留痕，面板只读展示 | `speak.history` / `speak.hold.<日期>` / `panels.speakGroup` | 面板「主动开口」分组可读出今天开口数与最近 5 句 |
+
+验证基线：`tests/speak.test.ts` **19 项**；`npm test` 从 126 增至 **145 项全绿**，`check:link` 仍 PASS 18。
+
+> 已知缺口：文案是模板不是模型生成；出口虽已抽象成 `SpeakSink`，但现成实现只能投桌宠气泡——插件无宿主会话写入权限，消息进不了聊天记录；`idle_half_min` / `threshold` / `max_per_day` 未经真实使用标定。
+
 ---
 
 ## 15. 风险与开放问题
@@ -1500,7 +1537,9 @@ vpet:
 - [x] 认知滤网已落地并回填存量（§8.5 / §14.5；2026-11-05 时真实库 662 条：活跃 64、归档 598，含后续忘却 126；2026-11-06 库已重置，待复测）
 - [x] 星图观感优化已落地（§14.6，悬停概要 / 鼠标锚点缩放 / 3D 透视，三项交互实测通过）
 - [x] 记忆与情感闭环已修复（§14.7，当时测试 103 项全绿：情绪量程、回忆重构、情感回落、L2 锚点、超级节点、存量显著性、同题口径）
-- [x] 性格多样性演化已落地（§4.8 / §14.8，`tests/personality.test.ts` 9 项；当前 `npm test` 112 项全绿）
+- [x] 性格多样性演化已落地（§4.8 / §14.8，`tests/personality.test.ts` 9 项）
+- [x] 行为动机已落地（§14.9，`tests/motivation.test.ts` 14 项；人格双通路 + 零信号收口）
+- [x] 主动开口已落地（§14.10，`tests/speak.test.ts` 19 项；思念饱和 + 欲言又止 + 三重兜底 + 默认关闭 + 出口抽象 + 桌面场景感知，当前 `npm test` 145 项全绿）
 - [x] 适配性 / 联动性自检 18 项全绿（§14.4，`npm run check:link`：PASS 18 / WARN 0 / FAIL 0，需先 `npm run build`）
 - [ ] 真实数据复测：`emotion_history` 行数与负面极性占比（§14.7 表格，需新对话；当前库已重置）
 - [ ] L3 认知偏差权重 / 应对策略的写入路径（当前只有 `defenseMaturity` 会变，`biasWeights` / `copingStrategies` 仅被归一化，无新增条目）

@@ -42,6 +42,104 @@ skills:
   # 一轮里至少用到几个工具，才把这次工具序列沉淀成技能草稿（§9.1 draft）
   min_steps_to_learn: 2
 
+# 行为动机：决策层把"文本相似度"换成动机评分
+#   - 人格只调信号通道的阈值，不直接改分数
+#   - 熟悉度倒 U、记忆三路径、情绪覆盖、情境乘子共同决定最终分数
+#   - enabled=false 时退回旧的相似度打分（便于对照）
+motivation:
+  enabled: true
+  # 人格对阈值的最大影响强度（0 = 人格不影响决策）
+  trait_threshold_gain: 0.25
+  # 阈值下限：外向/宜人拉满也只能把阈值压到这里，避免"零信号也能 act"
+  # 0 = 不设下限（不推荐）。不能大于 skills.min_main_score
+  min_threshold: 0.05
+  # 人格对分数的增益（方向舵）：乘子范围 [1-g, 1+g]
+  # 与 trait_threshold_gain 分工——那个决定"够不够力"，这个决定"更想走哪条路"。
+  # 只影响通道间的比分排序，不会凭空造出信号：signal=0 时分数恒为 0
+  trait_signal_gain: 0.2
+  # 熟悉度倒 U：exposure = uses / (uses + k)
+  familiarity:
+    k: 3
+    peak: 0.45
+    sigma: 0.35
+  # 记忆三路径：结果预期 / 情绪记忆 / 自我效能，权重内部会归一化
+  memory:
+    outcome_weight: 0.4
+    emotion_weight: 0.3
+    efficacy_weight: 0.3
+    half_life_days: 30        # 结果预期按上次使用时间衰减的半衰期
+    lookback_days: 30         # 情绪记忆只看最近多少天的事件
+  # 习得性无助：连续失败到阈值后熔断，冷却按 2 的指数增长
+  breaker:
+    fail_streak: 3
+    base_cooldown_min: 10
+    max_cooldown_min: 1440
+  # 情绪覆盖：命中条件时抬升/降低阈值，总偏移会被 clamp
+  emotion_override:
+    safety_low: 0.35
+    safety_low_offset: 0.10   # 安全感低 → 更谨慎
+    stress_high: 0.7
+    stress_high_offset: 0.08  # 压力高 → 更谨慎
+    pleasure_low: -0.25
+    pleasure_low_offset: 0.06 # 心情低 → 更谨慎
+    arousal_high: 0.4
+    arousal_high_offset: -0.05 # 唤醒高 → 更容易行动
+    fatigue_high: 0.8
+    fatigue_high_offset: 0.08 # 疲劳高 → 更谨慎
+    clamp_min: -0.15
+    clamp_max: 0.20
+  # 情境乘子：社交通道按亲密度放大，其余通道只吃一半影响
+  situation:
+    min_multiplier: 0.85
+    max_multiplier: 1.15
+  # score ≥ ratio × threshold 时为 hold（保留但不主动）
+  hold_ratio: 0.7
+
+# 主动开口：没人说话时，她什么时候会自己开口
+#   - 强度侧（想不想）吃人格、情绪、关系与沉默时长；门槛侧（合不合适）只吃时段与压力
+#   - 想说但忍住会累积"憋着"的压力，攒够了下一次才会真开口
+#   - 冷却期与日上限兜底，避免刷屏
+speak:
+  # 默认关闭：她会自己说话属于自主行为，装完插件不该自动开始。
+  # 想要这个效果，把下面改成 true 并确认桌宠在跑（否则消息没人接收）。
+  enabled: false
+  check_interval_min: 3      # 多久评估一次，不是多久说一次
+  min_idle_min: 45           # 至少安静这么久才开始考虑
+  idle_half_min: 180         # 思念的半饱和时间：沉默 3 小时约 0.5
+  trait_urge_gain: 1         # 人格对强度的放大倍数，0 = 人格不影响
+  threshold: 0.62            # 开口门槛
+  threshold_min: 0.40        # 门槛下限，防止被压成"见谁都说话"
+  refractory_min: 90         # 说过后强制安静
+  max_per_day: 5             # 一天最多主动开口几次
+  quiet_hours: [0, 7]        # 安静时段，支持跨午夜如 [23, 7]
+  quiet_penalty: 0.35        # 安静时段抬升的门槛
+  # 看得见屏幕时按场景抬门槛（需要 connectors/desktop 桥接在跑）：
+  # 会议 0.85 / 游戏 0.7 / 写代码 0.4 / 其它 0.15，乘以这个系数
+  busy_penalty: 0.25
+  hold_ratio: 0.75           # 到门槛的这个比例算"想说但忍住"
+  carry_step: 0.05           # 一次忍住累积多少
+  carry_decay: 0.02          # 没到 hold 时自然消退
+  carry_max: 0.25            # 累积上限
+  jitter: 0.04               # 抖动幅度，避免像定时任务
+
+# 表达出口：她主动说的话发给谁
+#   - 多个出口可同时开，并发投递；任一出口失败不影响其它出口
+#   - 留空或全部非法时退回桌宠，避免"开了却没人收到"
+#   - 可用类型：
+#       pet   DSH 内置桌宠 dsh-pet（蓝鱼）：气泡 + 情绪动画，宿主自己拼端口，无需填地址
+#       vpet  旧版 VPet 游戏的事件队列，需要 MOD 轮询（默认）
+#       http  把事件 JSON POST 给任意应用：{ type: http, url: http://127.0.0.1:8080/hook, timeout_ms: 3000 }
+#       file  追加 JSONL，任何本地进程都能 tail -f：{ type: file, path: logs/expression.jsonl }
+#   - pet 出口可选字段：pet（宠物 id，缺省 main）、duration_ms（气泡停留毫秒，0 = 只要动画）、
+#     route（路由段覆盖，缺省 /dsh-pet-7340）、url（缺省用宿主自己的 http://127.0.0.1:<port>）
+expression:
+  enabled: true
+  sinks:
+    - type: vpet
+  # 出厂只配了 vpet 时，若探测到 dsh-pet 在跑就让它接管（两套桌宠各弹一遍没意义）。
+  # 守着 VPet 就改成 false。
+  prefer_pet: true
+
 reflex:
   enabled: true
   max_match_ms: 5
@@ -162,6 +260,16 @@ personality:
 desktop:
   enabled: false
   bridge_url: http://127.0.0.1:47614
+
+# 抖音联动（可选）：只读 dsh-douyin-browser-local 的共享记忆库，
+# 把新刷到的视频记成她的一条事件（source = douyin_content）。
+#   - 全程只读，绝不写对方的库；没装该插件或库还没建时静默跳过
+#   - 首次启动与长时间关机后只补最近 24 小时，不把上周刷的当成"刚看到"
+douyin:
+  enabled: true
+  memory_db: "~/.dsh/douyin-browser/memory/shared.sqlite"
+  poll_interval_min: 10        # 多久拉一次新记录
+  max_items: 5                 # 单次最多入库几条，避免一口气灌满事件流
 
 # 桌宠联动（可选）：任何一项关掉/缺失，插件行为都与"没有桌宠"一致
 # 没装桌宠也不用改这里——没有心跳时 body_link 自动失效

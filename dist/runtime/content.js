@@ -1,3 +1,4 @@
+import { scoreSkills } from './motivation.js';
 import { clamp01, diceSimilarity, estimateTokens, truncate } from '../util.js';
 /* -------------------------------- 人格小段 -------------------------------- */
 /** 做任务时的说话节奏：不让模型在连续工具调用中保持沉默。 */
@@ -92,7 +93,31 @@ export function buildStateHint(l5, verdict) {
     return lines.join('\n');
 }
 /* -------------------------------- 技能激活 -------------------------------- */
-export function activateSkills(skills, userText, config) {
+/**
+ * 技能激活：动机决策层的入口。
+ * 默认走动机评分（人格/情绪调阈值，熟悉度/记忆/情境调分数）；
+ * motivation.enabled=false 时退回旧的相似度打分，保证可随时对照。
+ */
+export function activateSkills(skills, userText, config, ctx = {}) {
+    if (!config.motivation.enabled)
+        return activateBySimilarity(skills, userText, config);
+    const scored = scoreSkills(skills, userText, config, ctx);
+    const main = scored.find((item) => item.breakdown.decision === 'act');
+    const associated = scored
+        .filter((item) => item.skill.id !== main?.skill.id &&
+        item.breakdown.decision !== 'avoid' &&
+        item.breakdown.score >= config.skills.min_associated_score)
+        .slice(0, config.skills.max_associated)
+        .map((item) => item.skill);
+    return {
+        main: main?.skill,
+        associated,
+        confidence: main?.breakdown.score ?? 0,
+        breakdown: scored.map((item) => item.breakdown),
+    };
+}
+/** 旧版打分：只按文本相似度 + 关键词命中，不含人格与状态 */
+function activateBySimilarity(skills, userText, config) {
     const scored = skills
         // draft 也参与激活（§9.1「可执行，需确认」），deprecated 永不激活
         .filter((skill) => skill.status === 'active' || skill.status === 'frozen' || skill.status === 'draft')

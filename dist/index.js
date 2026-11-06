@@ -6,6 +6,8 @@ import { createRng, silentLogger, truncate } from './util.js';
 import { applyBodySignal, pickMotionByPad } from './runtime/body-link.js';
 import { decideIngest } from './runtime/filter.js';
 import { createInitialL5, selectSubpersona, updateL5 } from './runtime/state.js';
+import { evaluateSpeak, localDayKey } from './runtime/speak.js';
+import { readForeground } from './runtime/desktop-observe.js';
 import { containsDiagnosisLabel, evaluateSafety } from './runtime/safety.js';
 import { applySurprise, associateEvents, extractEvent, linkNewEvent, reconstructOnRecall, retrieveEvents, } from './runtime/memory.js';
 import { NO_MEMORY_CONSTRAINT, activateSkills, buildBlocks, buildEventDigest, buildPersonaText, buildRelationText, buildSkillDigest, buildStateHint, clipBlocks, matchReflex, WORKING_STYLE, } from './runtime/content.js';
@@ -291,7 +293,22 @@ class Daughter {
         return associateEvents(input.seedEventIds, candidates, Math.min(input.maxDepth, this.config.association.max_depth), Math.min(input.maxInjected, this.config.association.max_injected), this.config.association.hop_decay);
     }
     async skillActivate(input) {
-        const skills = this.store(input.ctx.characterId).loadSkills();
+        const store = this.store(input.ctx.characterId);
+        const skills = store.loadSkills();
+        // 没有可激活的技能时不读人格与事件，避免每轮都做无谓的全表扫描
+        if (skills.length === 0) {
+            return { main: undefined, associated: [], confidence: 0, breakdown: [] };
+        }
+        const persona = store.loadPersona();
+        const now = input.ctx.now();
+        const l5 = this.effective(input.ctx.characterId, this.getL5(input.ctx, persona), now);
+        const subPersona = this.pickSubpersona(persona, input.ctx.audience, l5.activeSubPersonaId);
+        // 情绪记忆只看配置的近期窗口；归档事件不参与动机判断
+        const lookbackMs = this.config.motivation.memory.lookback_days * 86_400_000;
+        const nowMs = Date.parse(now);
+        const recentEvents = Number.isFinite(nowMs)
+            ? store.listRecentEvents(new Date(nowMs - lookbackMs).toISOString())
+            : [];
         return activateSkills(skills, input.userText, {
             ...this.config,
             skills: {
@@ -299,7 +316,7 @@ class Daughter {
                 max_main: Math.min(input.maxMain, this.config.skills.max_main),
                 max_associated: Math.min(input.maxAssociated, this.config.skills.max_associated),
             },
-        });
+        }, { now, l5, persona, subPersona, recentEvents });
     }
     async assetInvoke(input) {
         const store = this.store(input.ctx.characterId);
@@ -415,6 +432,109 @@ class Daughter {
     }
     async tick(input) {
         return runTick(this.store(input.characterId), this.config, input.now);
+    }
+    /**
+     * 主动开口评估：没人说话的时候，她想不想开口。
+     * 决策在 `runtime/speak.ts` 里是纯函数，这里只负责取上下文、读写
+     * "今天说了几次 / 憋了多久"，投递（气泡、面板）交给宿主。
+     */
+    async speakPlan(input) {
+        if (!this.config.speak.enabled)
+            return null;
+        const nowMs = Date.parse(input.now);
+        if (!Number.isFinite(nowMs))
+            return null;
+        const store = this.store(input.characterId);
+        const persona = store.loadPersona();
+        // 首次运行记一个锚点：刚装上不该立刻自言自语
+        if (store.getMeta('speak.bootAt') === null)
+            store.setMeta('speak.bootAt', input.now);
+        // 用最近活跃的会话当"她此刻在跟谁说话"
+        let latestL5 = null;
+        let latestAt = Number.NEGATIVE_INFINITY;
+        for (const sessionId of store.listL5Sessions()) {
+            const candidate = store.loadL5(sessionId);
+            if (!candidate)
+                continue;
+            const at = Date.parse(candidate.lastTickAt);
+            if (Number.isFinite(at) && at > latestAt) {
+                latestAt = at;
+                latestL5 = candidate;
+            }
+        }
+        const l5 = latestL5 ? this.effective(input.characterId, latestL5, input.now) : undefined;
+        const lastAtRaw = store.getMeta('speak.lastAt');
+        const lastAtMs = lastAtRaw === null ? Number.NaN : Date.parse(lastAtRaw);
+        const sinceLastSpeakMinutes = Number.isFinite(lastAtMs) ? Math.max(0, (nowMs - lastAtMs) / 60_000) : null;
+        // 沉默时长以"最后一次对话"为准；没有对话记录时退到安装锚点
+        const anchorRaw = latestL5?.lastTickAt ?? store.getMeta('speak.bootAt') ?? input.now;
+        const anchorMs = Date.parse(anchorRaw);
+        // 她刚说完话也算"刚联系过"：对方没回时，不该让自己的沉默继续累积成刷屏
+        const idleAnchorMs = Number.isFinite(anchorMs) && Number.isFinite(lastAtMs) ? Math.max(anchorMs, lastAtMs) : anchorMs;
+        const idleMinutes = Number.isFinite(idleAnchorMs) ? Math.max(0, (nowMs - idleAnchorMs) / 60_000) : 0;
+        const dayKey = `speak.count.${localDayKey(input.now)}`;
+        const todayCount = store.getMetaNumber(dayKey, 0);
+        // 最近说过的几句，避免翻来覆去同一句
+        const recentRaw = store.getMeta('speak.recentLines');
+        const recentLines = recentRaw === null
+            ? []
+            : recentRaw
+                .split(',')
+                .map((item) => Number(item))
+                .filter((item) => Number.isFinite(item));
+        // 看得见屏幕的话，先看一眼她现在是不是在开会/打游戏。
+        // 桥接没在跑会静默返回 null，按"看不见"处理，不会因此不再开口。
+        const foreground = this.config.desktop.enabled
+            ? await readForeground({ bridgeUrl: this.config.desktop.bridge_url, timeoutMs: 1200 })
+            : null;
+        const plan = evaluateSpeak({
+            now: input.now,
+            bigFive: persona?.l1.bigFive,
+            l5,
+            relationshipDepth: persona?.l2.relationshipDepth,
+            idleMinutes,
+            sinceLastSpeakMinutes,
+            todayCount,
+            carry: store.getMetaNumber('speak.carry', 0),
+            foreground,
+            jitter: input.jitter,
+        }, this.config, {
+            recentLines,
+            seed: `${input.characterId}:${localDayKey(input.now)}:${todayCount}:${Math.round(idleMinutes)}`,
+        });
+        store.setMeta('speak.carry', String(plan.carry));
+        if (plan.decision === 'act') {
+            store.setMeta('speak.lastAt', input.now);
+            store.setMeta(dayKey, String(todayCount + 1));
+            if (plan.lineIndex !== undefined) {
+                store.setMeta('speak.recentLines', [...recentLines, plan.lineIndex].slice(-5).join(','));
+            }
+            // 留痕：面板要能翻到"她说过什么"，否则这个功能是黑盒
+            const historyRaw = store.getMeta('speak.history');
+            let history = [];
+            if (historyRaw) {
+                try {
+                    history = JSON.parse(historyRaw);
+                }
+                catch {
+                    history = [];
+                }
+            }
+            history.push({ at: input.now, text: plan.text, reason: plan.reason });
+            store.setMeta('speak.history', JSON.stringify(history.slice(-10)));
+            this.logger.debug('speak_act', {
+                reason: plan.reason,
+                urge: Number(plan.urge.toFixed(3)),
+                threshold: Number(plan.threshold.toFixed(3)),
+                idleMinutes: Math.round(idleMinutes),
+            });
+        }
+        else if (plan.decision === 'hold') {
+            // "想说但忍住"只记次数，不记全文——否则一天几百条噪声
+            const holdKey = `speak.hold.${localDayKey(input.now)}`;
+            store.setMeta(holdKey, String(store.getMetaNumber(holdKey, 0) + 1));
+        }
+        return plan;
     }
     /** 面板入口读取星图：按当前库实时重算并落盘 */
     starMap(characterId, now) {

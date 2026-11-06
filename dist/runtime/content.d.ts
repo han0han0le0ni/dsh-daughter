@@ -1,5 +1,6 @@
 import type { DaughterConfig, EventRecord, L5State, MoralOutlook, PersonaBundle, PromptBlock, ReflexAction, ReflexRule, RetrievalHit, SafetyVerdict, SkillActivation, SkillCard, SubPersona } from '../types.js';
 import type { PersonProfile, ThingProfile } from './maintenance.js';
+import { type MotivationContext } from './motivation.js';
 /** 做任务时的说话节奏：不让模型在连续工具调用中保持沉默。 */
 export declare const WORKING_STYLE: string;
 export declare function buildPersonaText(persona: PersonaBundle, sub: SubPersona): string;
@@ -13,7 +14,12 @@ export declare function buildRelationText(input: {
     moral: MoralOutlook;
 }): string;
 export declare function buildStateHint(l5: L5State, verdict: SafetyVerdict): string;
-export declare function activateSkills(skills: SkillCard[], userText: string, config: DaughterConfig): SkillActivation;
+/**
+ * 技能激活：动机决策层的入口。
+ * 默认走动机评分（人格/情绪调阈值，熟悉度/记忆/情境调分数）；
+ * motivation.enabled=false 时退回旧的相似度打分，保证可随时对照。
+ */
+export declare function activateSkills(skills: SkillCard[], userText: string, config: DaughterConfig, ctx?: MotivationContext): SkillActivation;
 export declare function matchReflex(rules: ReflexRule[], userText: string, l5: L5State, lastFired: Record<string, string>, now: string, config: DaughterConfig, source?: EventRecord['source']): {
     rule: ReflexRule;
     action: ReflexAction;

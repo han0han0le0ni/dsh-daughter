@@ -388,14 +388,23 @@ export function bumpSkill(
 ): SkillCard {
   const apply = (current: SkillCard): SkillCard => {
     const failCount = current.failCount + (success ? 0 : 1);
+    const failStreak = success ? 0 : (current.failStreak ?? 0) + 1;
     let status: SkillCard['status'] = current.status;
     if (status === 'draft' && success) status = 'active';
     else if (status === 'active' && failCount >= DEPRECATE_AFTER_FAILS) status = 'deprecated';
+    // 习得性无助：连续失败到阈值后进入冷却，冷却期内决策层只避不做；成功即解除
+    const breakerUntil = success
+      ? undefined
+      : failStreak >= config.motivation.breaker.fail_streak
+        ? breakerDeadline(now, failStreak, config)
+        : current.breakerUntil;
     return {
       ...current,
       maturity: clamp01(current.maturity + (success ? 0.05 : -0.03)),
       successCount: current.successCount + (success ? 1 : 0),
       failCount,
+      failStreak,
+      breakerUntil,
       lastUsedAt: now,
       updatedAt: now,
       status,
@@ -413,6 +422,19 @@ export function bumpSkill(
 
 /** 连续失败多少次后技能作废，与 §9.1 的 deprecated 出口对应 */
 const DEPRECATE_AFTER_FAILS = 5;
+
+/**
+ * 熔断冷却：第 fail_streak 次失败起按 2 的指数增长，
+ * 3 次失败 10 分钟、4 次 20 分钟……上限由配置封顶。
+ */
+function breakerDeadline(now: string, failStreak: number, config: DaughterConfig): string {
+  const breaker = config.motivation.breaker;
+  const exponent = Math.max(0, failStreak - breaker.fail_streak);
+  const minutes = Math.min(breaker.max_cooldown_min, breaker.base_cooldown_min * Math.pow(2, exponent));
+  const baseMs = Date.parse(now);
+  if (!Number.isFinite(baseMs)) return now;
+  return new Date(baseMs + minutes * 60_000).toISOString();
+}
 
 /**
  * 从一次成功的工具序列里沉淀技能草稿（§9.1「draft：新学技能」）。
@@ -462,6 +484,7 @@ export function learnDraftSkill(
     maturity: 0.3,
     successCount: 0,
     failCount: 0,
+    failStreak: 0,
     version: 1,
     status: 'draft',
     updatedAt: input.now,
