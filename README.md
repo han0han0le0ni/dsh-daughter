@@ -41,6 +41,8 @@ npx dsh-daughter-token --write-to "<VPet 安装目录>\mod\DshDaughter\plugin"
 
 也可以手动把 `brain/brainstem/connector_token` 的内容复制成 `plugin/token.txt`，或设置环境变量 `DSH_DAUGHTER_TOKEN`。令牌缺失时 MOD 仍会启动，但请求会被 401 拒绝，日志里会写明原因。
 
+> 如果宿主把 `storage.data_root` 改到了别处，取令牌时要一起指定：`npx dsh-daughter-token --data-root <数据目录>`（或设 `DSH_DAUGHTER_DATA_ROOT`）。不指定的话，它会在插件目录里新建一个令牌，和插件实际用的那个对不上，连接器就会一直 401。
+
 **怎么编译**（MOD 源码在 `connectors/vpet/mod-src/`，目标框架 `net10.0-windows`）：
 
 ```powershell

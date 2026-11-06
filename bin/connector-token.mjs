@@ -11,6 +11,8 @@
  *   npx dsh-daughter-token --rotate
  *
  * 参数：
+ *   --data-root <目录>  指定数据根目录（宿主把 storage.data_root 改到别处时必须传，
+ *                       否则会在这里新造一个令牌，和插件实际用的那个对不上）
  *   --write-to <目录>   同时写入 <目录>/token.txt（MOD / 壳直接读）
  *   --rotate            删掉旧令牌重新生成（所有连接器都要换新值）
  *   --json              机器可读
@@ -35,7 +37,11 @@ const value = (name, fallback) => {
 const pluginRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 const config = loadConfig(pluginRoot, silentLogger);
-const dataRoot = resolveDataRoot(pluginRoot, config);
+
+// 宿主可能用 storage.data_root 覆盖 config.yaml 里的值；这里允许显式指定，
+// 避免在包目录里新造一个令牌，而插件实际读的是另一个位置
+const dataRootOverride = String(value('data-root', process.env.DSH_DAUGHTER_DATA_ROOT ?? '')).trim();
+const dataRoot = dataRootOverride ? resolve(pluginRoot, dataRootOverride) : resolveDataRoot(pluginRoot, config);
 const tokenPath = join(dataRoot, CONNECTOR_TOKEN_FILE);
 
 if (has('rotate')) {
