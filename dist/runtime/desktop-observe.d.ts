@@ -34,6 +34,7 @@ interface FetchResponseLike {
 }
 type FetchLike = (url: string, init?: {
     signal?: AbortSignal;
+    headers?: Record<string, string>;
 }) => Promise<FetchResponseLike>;
 interface ToolRenderBlock {
     type: 'text' | 'image';
@@ -53,6 +54,8 @@ interface ToolDefinitionLike {
 }
 export interface DesktopObserveOptions {
     bridgeUrl?: string;
+    /** 连接器令牌（§12.2）。桥接侧无令牌或令牌不符一律 401，环回地址不豁免 */
+    token?: string;
     fetchImpl?: FetchLike;
     timeoutMs?: number;
     logger?: Partial<Logger>;

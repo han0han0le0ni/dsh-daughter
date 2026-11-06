@@ -34,6 +34,8 @@ interface ToolDefinitionLike {
 }
 export interface DesktopInputOptions {
     bridgeUrl?: string;
+    /** 连接器令牌（§12.2）：/input 能注入键鼠，没有令牌时桥接直接 401 */
+    token?: string;
     fetchImpl?: FetchLike;
     timeoutMs?: number;
     logger?: Partial<Logger>;

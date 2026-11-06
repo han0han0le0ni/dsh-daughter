@@ -14,7 +14,10 @@
  *   node connectors/desktop/bridge.mjs --once
  */
 import { createServer } from 'node:http';
-import { pathToFileURL } from 'node:url';
+import { createHash, timingSafeEqual } from 'node:crypto';
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { captureScreenFrame, createFfmpegStream, hasFfmpeg } from './capture.mjs';
 import { createDesktopSystem } from './system.mjs';
 import { createDesktopInput, InputValidationError, normalizeInput } from './input.mjs';
@@ -22,6 +25,59 @@ import { createDesktopInput, InputValidationError, normalizeInput } from './inpu
 const DEFAULT_ENDPOINT = 'http://127.0.0.1:47612';
 const DEFAULT_PORT = 47614;
 const BOUNDARY = 'dshframe';
+const TOKEN_HEADER = 'x-dsh-token';
+/** 默认令牌文件：插件根目录下的 brain/brainstem/connector_token（与本文件差两级） */
+const DEFAULT_TOKEN_FILE = join(
+  dirname(fileURLToPath(import.meta.url)),
+  '..',
+  '..',
+  'brain',
+  'brainstem',
+  'connector_token',
+);
+
+/** 与插件侧 connector-auth 同一套判定：浏览器来源一律不认，令牌走常量时间比较 */
+function readTokenFile(path) {
+  try {
+    if (!existsSync(path)) return '';
+    const raw = readFileSync(path, 'utf8').trim();
+    return raw.length >= 16 ? raw : '';
+  } catch {
+    return '';
+  }
+}
+
+function digest(value) {
+  return createHash('sha256').update(value, 'utf8').digest();
+}
+
+function tokenMatches(expected, actual) {
+  if (!expected || !actual) return false;
+  return timingSafeEqual(digest(expected), digest(actual));
+}
+
+function incomingToken(req) {
+  const direct = req.headers[TOKEN_HEADER];
+  if (typeof direct === 'string' && direct.trim()) return direct.trim();
+  const authorization = req.headers.authorization;
+  if (typeof authorization === 'string') {
+    const matched = /^Bearer\s+(.+)$/i.exec(authorization.trim());
+    if (matched?.[1]) return matched[1].trim();
+  }
+  return null;
+}
+
+/**
+ * 浏览器发起的请求直接拒绝：连接器用 fetch/HttpClient，不会带这些头。
+ * 这一条比令牌更早生效——即使令牌泄露，页面里的脚本也打不进来。
+ */
+function isBrowserInitiated(req) {
+  // 不用 sec-fetch-mode：Node 自带的 fetch 也会发它（cors），会把自家工具误判成浏览器
+  if (req.headers.origin !== undefined) return true;
+  if (req.headers['sec-fetch-site'] !== undefined) return true;
+  const referer = req.headers.referer;
+  return typeof referer === 'string' && /^https?:/i.test(referer.trim());
+}
 
 function sendJson(res, status, body) {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
@@ -104,8 +160,11 @@ export function createDesktopBridge(options = {}) {
     pollMs = 5000,
     autoPoll = false,
     input: providedInput = undefined,
+    /** 连接器令牌；为空时**服务端拒绝一切数据请求**（不因"本机来的"放行） */
+    token = '',
   } = options;
 
+  const authToken = String(token ?? '').trim();
   const base = String(endpoint).replace(/\/+$/, '');
   const desktopInput = providedInput === undefined
     ? createDesktopInput({ powershell, logger })
@@ -132,7 +191,7 @@ export function createDesktopBridge(options = {}) {
     const text = `电脑前台切换到 ${foreground.title}${process}`;
     const response = await fetchImpl(`${base}/connectors/system/ingest`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...(authToken ? { [TOKEN_HEADER]: authToken } : {}) },
       body: JSON.stringify({ text }),
     });
     if (!response.ok) throw new Error(`ingest ${response.status}: ${await response.text()}`);
@@ -145,19 +204,23 @@ export function createDesktopBridge(options = {}) {
         const url = new URL(req.url ?? '/', 'http://127.0.0.1');
         const path = url.pathname;
 
+        // 健康检查只回"活着 + 要认证"：以前这里会吐窗口标题、ffmpeg 状态、帧率，
+        // 等于给本机扫描器免费做一次能力探测
         if (req.method === 'GET' && path === '/health') {
-          sendJson(res, 200, {
-            ok: true,
-            platform: process.platform,
-            fps,
-            streamFps,
-            streamWidth,
-            streamQuality,
-            frameQuality,
-            windowTitle,
-            ffmpeg: await ensureFfmpeg(),
-            input: Boolean(desktopInput),
-          });
+          sendJson(res, 200, { ok: true, auth: 'token' });
+          return;
+        }
+        if (isBrowserInitiated(req)) {
+          logger.warn?.('[desktop-bridge] 拒绝浏览器来源的请求', { path, method: req.method });
+          sendJson(res, 403, { ok: false, error: 'browser_origin' });
+          return;
+        }
+        if (!authToken) {
+          sendJson(res, 503, { ok: false, error: 'token_unavailable' });
+          return;
+        }
+        if (!tokenMatches(authToken, incomingToken(req))) {
+          sendJson(res, 401, { ok: false, error: 'token_mismatch' });
           return;
         }
         if (req.method === 'GET' && path === '/windows') {
@@ -362,8 +425,27 @@ async function main() {
     return;
   }
 
+  // 令牌优先级：--token > 环境变量 > 令牌文件。三处都没有就拒绝启动，
+  // 不提供"无认证但只监听 127.0.0.1"这种降级——环回地址不是权限边界。
+  const token = String(
+    option(
+      'token',
+      process.env.DSH_DAUGHTER_TOKEN ??
+        readTokenFile(option('token-file', process.env.DSH_DAUGHTER_TOKEN_FILE ?? DEFAULT_TOKEN_FILE)),
+    ),
+  ).trim();
+  if (!token) {
+    console.error(
+      '[desktop-bridge] 缺少连接器令牌，已拒绝启动。\n' +
+        '  先启动一次插件生成 brain/brainstem/connector_token，或用 --token / DSH_DAUGHTER_TOKEN 指定。',
+    );
+    process.exitCode = 1;
+    return;
+  }
+
   const bridge = createDesktopBridge({
     endpoint,
+    token,
     port: Number(option('port', String(DEFAULT_PORT))),
     fps: Number(option('fps', '2')),
     streamFps: Number(option('stream-fps', '30')),

@@ -6,6 +6,7 @@
  */
 import type { Logger, ToolGate } from '../util.js';
 import { checkToolGate } from '../util.js';
+import { tokenHeader } from './connector-auth.js';
 
 const DEFAULT_BRIDGE_URL = 'http://127.0.0.1:47612';
 
@@ -45,6 +46,8 @@ interface ToolDefinitionLike {
 
 export interface VpetControlOptions {
   bridgeUrl?: string;
+  /** 连接器令牌（§12.2）：桥接端点不再对"本机来的"放行 */
+  token?: string;
   fetchImpl?: FetchLike;
   timeoutMs?: number;
   logger?: Partial<Logger>;
@@ -155,6 +158,7 @@ export function createVpetControlTool(options: VpetControlOptions = {}): ToolDef
   const fetchImpl = options.fetchImpl ?? (globalThis.fetch as unknown as FetchLike | undefined);
   const timeoutMs = options.timeoutMs ?? 5000;
   const logger = options.logger;
+  const authHeaders = tokenHeader(String(options.token ?? ''));
 
   return {
     name: 'vpet_control',
@@ -218,7 +222,12 @@ export function createVpetControlTool(options: VpetControlOptions = {}): ToolDef
       checkToolGate(options.guard, action === 'status' ? 'read' : 'write', 'vpet_control');
 
       if (action === 'status') {
-        const payload = (await requestJson(fetchImpl, `${bridgeUrl}/vpet/status`, undefined, timeoutMs)) as VpetStatusPayload;
+        const payload = (await requestJson(
+          fetchImpl,
+          `${bridgeUrl}/vpet/status`,
+          { headers: authHeaders },
+          timeoutMs,
+        )) as VpetStatusPayload;
         return { text: formatStatus(payload) };
       }
 
@@ -232,7 +241,7 @@ export function createVpetControlTool(options: VpetControlOptions = {}): ToolDef
           `${bridgeUrl}/vpet/control`,
           {
             method: 'POST',
-            headers: { 'content-type': 'application/json' },
+            headers: { 'content-type': 'application/json', ...authHeaders },
             body: JSON.stringify({ action: 'animate', graph, loops, ...(text ? { text } : {}) }),
           },
           timeoutMs,
@@ -251,7 +260,7 @@ export function createVpetControlTool(options: VpetControlOptions = {}): ToolDef
           `${bridgeUrl}/vpet/control`,
           {
             method: 'POST',
-            headers: { 'content-type': 'application/json' },
+            headers: { 'content-type': 'application/json', ...authHeaders },
             body: JSON.stringify({ action: 'move', dx, dy, durationMs }),
           },
           timeoutMs,

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Net.Http;
 using System.Text;
 using System.Text.Json;
@@ -55,6 +56,46 @@ namespace DshPet
         public BridgeClient(string baseUrl)
         {
             this.baseUrl = (baseUrl ?? string.Empty).TrimEnd('/');
+
+            // 插件端点要求连接器令牌（§12.2）。没有令牌就照常请求，让服务端 401 并记日志，
+            // 不做"没令牌也就通融一下"的降级。
+            string token = ResolveToken();
+            if (string.IsNullOrEmpty(token))
+            {
+                PetLog.Write("未找到连接器令牌：插件端点会拒绝请求（token.txt 或 DSH_DAUGHTER_TOKEN）");
+            }
+            else
+            {
+                http.DefaultRequestHeaders.Add("x-dsh-token", token);
+            }
+        }
+
+        /// <summary>令牌来源：环境变量 > 环境变量指定的文件 > 可执行文件目录下的 token.txt。</summary>
+        private static string ResolveToken()
+        {
+            string fromEnv = Environment.GetEnvironmentVariable("DSH_DAUGHTER_TOKEN");
+            if (!string.IsNullOrEmpty(fromEnv)) return fromEnv.Trim();
+
+            string explicitFile = Environment.GetEnvironmentVariable("DSH_DAUGHTER_TOKEN_FILE");
+            var candidates = new List<string>();
+            if (!string.IsNullOrEmpty(explicitFile)) candidates.Add(explicitFile);
+            string baseDir = AppContext.BaseDirectory;
+            if (!string.IsNullOrEmpty(baseDir)) candidates.Add(Path.Combine(baseDir, "token.txt"));
+
+            foreach (string path in candidates)
+            {
+                try
+                {
+                    if (!File.Exists(path)) continue;
+                    string raw = File.ReadAllText(path).Trim();
+                    if (raw.Length >= 16) return raw;
+                }
+                catch
+                {
+                    // 读不到就当没有：宁可连不上，也不要静默降级
+                }
+            }
+            return string.Empty;
         }
 
         public bool Online { get; private set; }

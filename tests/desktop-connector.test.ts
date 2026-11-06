@@ -6,6 +6,14 @@ import { buildFfmpegArgs, createJpegFrameReader } from '../connectors/desktop/ca
 import { parseJsonList } from '../connectors/desktop/system.mjs';
 import { parseExternalIngestPath } from '../src/host.js';
 
+// 连接器端点要求令牌（§12.2）：测试同样要带，顺带覆盖"认证通过才可用"这条链路
+const TEST_TOKEN = 'test-token-0123456789abcdef';
+const authFetch = (url: string, init: RequestInit = {}): Promise<Response> =>
+  fetch(url, {
+    ...init,
+    headers: { ...((init.headers as Record<string, string> | undefined) ?? {}), 'x-dsh-token': TEST_TOKEN },
+  });
+
 function listen(server: Server): Promise<number> {
   return new Promise((resolve, reject) => {
     server.once('error', reject);
@@ -89,6 +97,7 @@ test('P9 桌面：状态、截图、抽帧与前台事件端到端', async () =>
   let captures = 0;
 
   const bridge = await startDesktopBridge({
+    token: TEST_TOKEN,
     endpoint: `http://127.0.0.1:${dshPort}`,
     port: 0,
     backend: 'powershell',
@@ -102,28 +111,29 @@ test('P9 桌面：状态、截图、抽帧与前台事件端到端', async () =>
 
   try {
     const base = `http://127.0.0.1:${bridge.port}`;
-    const health = await fetch(`${base}/health`).then((response) => response.json());
+    const health = await authFetch(`${base}/health`).then((response) => response.json());
+    // 健康检查只回"活着 + 要认证"：窗口标题、ffmpeg 状态、帧率不再从这里泄露
     assert.equal(health.ok, true);
-    assert.equal(health.ffmpeg, false);
-    assert.equal(health.streamWidth, 1280);
-    assert.equal(health.streamQuality, 7);
+    assert.equal(health.auth, 'token');
+    assert.equal(health.ffmpeg, undefined);
+    assert.equal(health.streamWidth, undefined);
 
-    const windows = await fetch(`${base}/windows`).then((response) => response.json());
+    const windows = await authFetch(`${base}/windows`).then((response) => response.json());
     assert.equal(windows.windows.length, 2);
     assert.equal(windows.windows[0].MainWindowTitle, '视频 - Chrome');
 
-    const foreground = await fetch(`${base}/foreground`).then((response) => response.json());
+    const foreground = await authFetch(`${base}/foreground`).then((response) => response.json());
     assert.equal(foreground.foreground.processName, 'chrome');
 
-    const media = await fetch(`${base}/media`).then((response) => response.json());
+    const media = await authFetch(`${base}/media`).then((response) => response.json());
     assert.equal(media.media.title, '测试视频');
 
-    const screenshot = await fetch(`${base}/screenshot`);
+    const screenshot = await authFetch(`${base}/screenshot`);
     assert.equal(screenshot.headers.get('content-type'), 'image/png');
     assert.deepEqual(Buffer.from(await screenshot.arrayBuffer()), PNG);
 
     const controller = new AbortController();
-    const frames = await fetch(`${base}/frames?fps=10`, { signal: controller.signal });
+    const frames = await authFetch(`${base}/frames?fps=10`, { signal: controller.signal });
     assert.match(frames.headers.get('content-type') ?? '', /multipart\/x-mixed-replace/);
     const reader = frames.body!.getReader();
     let head = '';
@@ -149,6 +159,7 @@ test('P9 桌面：状态、截图、抽帧与前台事件端到端', async () =>
 
 test('P9 桌面：ffmpeg 实时流可输出 JPEG 帧', async () => {
   const bridge = await startDesktopBridge({
+    token: TEST_TOKEN,
     endpoint: 'http://127.0.0.1:9',
     port: 0,
     backend: 'ffmpeg',
@@ -163,7 +174,7 @@ test('P9 桌面：ffmpeg 实时流可输出 JPEG 帧', async () => {
 
   try {
     const controller = new AbortController();
-    const response = await fetch(`http://127.0.0.1:${bridge.port}/stream`, { signal: controller.signal });
+    const response = await authFetch(`http://127.0.0.1:${bridge.port}/stream`, { signal: controller.signal });
     assert.equal(response.status, 200);
     const reader = response.body!.getReader();
     const { value } = await reader.read();

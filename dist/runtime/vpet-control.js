@@ -1,4 +1,5 @@
 import { checkToolGate } from '../util.js';
+import { tokenHeader } from './connector-auth.js';
 const DEFAULT_BRIDGE_URL = 'http://127.0.0.1:47612';
 function clampInteger(value, fallback, min, max) {
     const number = Number(value);
@@ -56,6 +57,7 @@ export function createVpetControlTool(options = {}) {
     const fetchImpl = options.fetchImpl ?? globalThis.fetch;
     const timeoutMs = options.timeoutMs ?? 5000;
     const logger = options.logger;
+    const authHeaders = tokenHeader(String(options.token ?? ''));
     return {
         name: 'vpet_control',
         description: '控制桌面宠物（VPet）的动画与位置。平时不必调用，桌宠会自主活动；只有需要让它做出特定动作或移动到指定位置时才使用。可用动作：animate（播放原生动画，常用 GraphType：Say / Touch_Head / Touch_Body / Idel / Sleep / Work / StateONE / StateTWO）、move（相对当前位置平移）、status（查看连接状态）。',
@@ -116,7 +118,7 @@ export function createVpetControlTool(options = {}) {
             const action = String(args.action ?? '');
             checkToolGate(options.guard, action === 'status' ? 'read' : 'write', 'vpet_control');
             if (action === 'status') {
-                const payload = (await requestJson(fetchImpl, `${bridgeUrl}/vpet/status`, undefined, timeoutMs));
+                const payload = (await requestJson(fetchImpl, `${bridgeUrl}/vpet/status`, { headers: authHeaders }, timeoutMs));
                 return { text: formatStatus(payload) };
             }
             if (action === 'animate') {
@@ -127,7 +129,7 @@ export function createVpetControlTool(options = {}) {
                 const text = typeof args.text === 'string' && args.text.trim() ? args.text.trim() : undefined;
                 const payload = await requestJson(fetchImpl, `${bridgeUrl}/vpet/control`, {
                     method: 'POST',
-                    headers: { 'content-type': 'application/json' },
+                    headers: { 'content-type': 'application/json', ...authHeaders },
                     body: JSON.stringify({ action: 'animate', graph, loops, ...(text ? { text } : {}) }),
                 }, timeoutMs);
                 logger?.debug?.('vpet_control: animate', { graph, loops, ok: payload.ok });
@@ -141,7 +143,7 @@ export function createVpetControlTool(options = {}) {
                 const durationMs = clampInteger(args.duration_ms, 600, 100, 5000);
                 const payload = await requestJson(fetchImpl, `${bridgeUrl}/vpet/control`, {
                     method: 'POST',
-                    headers: { 'content-type': 'application/json' },
+                    headers: { 'content-type': 'application/json', ...authHeaders },
                     body: JSON.stringify({ action: 'move', dx, dy, durationMs }),
                 }, timeoutMs);
                 logger?.debug?.('vpet_control: move', { dx, dy, durationMs, ok: payload.ok });

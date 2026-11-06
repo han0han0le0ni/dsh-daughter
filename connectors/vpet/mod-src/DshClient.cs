@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Net;
 using System.Net.Http;
 using System.Text;
@@ -60,6 +61,46 @@ namespace DshDaughter
             this.endpoint = endpoint;
             this.log = log;
             client = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
+
+            // 插件端点要求连接器令牌（§12.2）。拿不到就照常发请求，让服务端 401，
+            // 日志里能看到原因——本地绝不为了"能连上"而跳过认证。
+            string token = ResolveToken();
+            if (string.IsNullOrEmpty(token))
+            {
+                log.Write("未找到连接器令牌：插件端点将拒绝请求，请把 token.txt 放到 MOD 目录或设置 DSH_DAUGHTER_TOKEN");
+            }
+            else
+            {
+                client.DefaultRequestHeaders.Add("x-dsh-token", token);
+            }
+        }
+
+        /// <summary>令牌来源：环境变量 > 环境变量指定的文件 > MOD 目录下的 token.txt。</summary>
+        private static string ResolveToken()
+        {
+            string fromEnv = Environment.GetEnvironmentVariable("DSH_DAUGHTER_TOKEN");
+            if (!string.IsNullOrEmpty(fromEnv)) return fromEnv.Trim();
+
+            string explicitFile = Environment.GetEnvironmentVariable("DSH_DAUGHTER_TOKEN_FILE");
+            var candidates = new List<string>();
+            if (!string.IsNullOrEmpty(explicitFile)) candidates.Add(explicitFile);
+            string baseDir = AppDomain.CurrentDomain.BaseDirectory;
+            if (!string.IsNullOrEmpty(baseDir)) candidates.Add(Path.Combine(baseDir, "token.txt"));
+
+            foreach (string path in candidates)
+            {
+                try
+                {
+                    if (!File.Exists(path)) continue;
+                    string raw = File.ReadAllText(path).Trim();
+                    if (raw.Length >= 16) return raw;
+                }
+                catch
+                {
+                    // 读不到就当没有：宁可连不上，也不要静默降级成无认证
+                }
+            }
+            return string.Empty;
         }
 
         public async Task<SeedResult> SeedAsync()

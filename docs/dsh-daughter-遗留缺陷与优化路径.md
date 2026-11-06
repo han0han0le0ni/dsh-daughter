@@ -1,6 +1,6 @@
 # dsh-daughter 遗留缺陷与优化路径
 
-- 基线：2026-11-07，`npm test` **203 项全绿**、`check:link` **PASS 18**、`tsc --noEmit` 无错、`memory:doctor` **13 项 0 错误**
+- 基线：2026-11-07，`npm test` **211 项全绿**、`check:link` **PASS 19**、`tsc --noEmit` 无错、`memory:doctor` **13 项 0 错误**
 - 真实库：57 条事件（chat 34 / douyin_content 23）、回看记录 25 行、演化日志 8 条
 - 配套材料：`docs/dsh-daughter-评测-第1~4轮.md`（逐轮核对过程与数据）
 
@@ -26,6 +26,7 @@
 | FTS 触发器过宽 | 收窄为 `UPDATE OF title, summary, tags` | 减少每次权重衰减的索引重写 |
 | 数据一致性无自查 | `npm run memory:doctor`（13 项，只读；`--fix` 才动手） | 当前 0 错误 |
 | 无法重置 | `npm run reset`（memory / personality / reflex / skills / all，dry-run + 备份 + 回收站） | 7 项单测 |
+| **桥接端点无认证**（更高危） | 47612 / 47614 / 47613 全部要求 `x-dsh-token`，常量时间比较；浏览器来源 403；令牌不可用 503；连接器无令牌拒绝启动；`/health` 只回 `{ ok, auth }`；`desktop.enabled` 默认关闭 | `tests/connector-auth.test.ts` 8 项 + 自检 19 项；MOD 与独立壳已重编译 |
 
 ---
 
@@ -53,6 +54,9 @@
 | DEF-16 | P3 | 月度日志压缩归档未做 | 仅按 `log_retention_days` 逐条裁剪 | 与演化日志按月切片一起做 |
 | DEF-17 | P3 | P9 剩余三个连接器 | QQ / Minecraft / 单机待适配器 | 可先走 `/connectors/<source>/ingest` |
 | DEF-18 | P3 | 主动开口与动机层无真实标定 | `speak.enabled` 默认关闭；`motivation.*` 经验值 | 跑影子模式（只记录不投递）两周再定阈值 |
+| DEF-19 | P3 | 令牌以明文落盘 | `brain/brainstem/connector_token` 0600（POSIX）／同用户可读（Windows ACL 未收紧） | 本机威胁模型下的合理取舍；文档写明"同机同账户可读"，建议随版本轮换 |
+| DEF-20 | P3 | 认证失败无速率限制与审计 | 只记一条 warn（浏览器来源），401 次数未进 metrics | 401/403 计数进 `metrics.jsonl`，连续失败 ≥10 次打印一次汇总 |
+| DEF-21 | P3 | `/health` 收敛后外部监控能力下降 | 只回 `{ ok, auth }`，不再给队列/在线状态 | 确需监控时带令牌读 `/vpet/status`；不要把队列信息放回 `/health` |
 
 ---
 

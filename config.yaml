@@ -189,6 +189,14 @@ storage:
   # true = 人格/技能/资产/L5/日志写入走文件锁 + 原子写（§5.3）；false 会退化为无锁写并告警
   single_writer: true
 
+# 本机连接器认证（§12.2）：桥接端点（47612）与桌面连接器（47614）都要求令牌。
+#   - 留空 = 首次启动自动生成 brain/brainstem/connector_token（0600），不会退化成无认证
+#   - 显式填写（≥16 字符）= 固定用它，多机/容器部署时用；填写过短会被忽略并告警
+#   - 任何情况下，浏览器来源（带 Origin / Sec-Fetch-*）的请求一律拒绝，令牌正确也不行
+# MOD 与独立壳需要这个令牌：跑 `npm run connector:token` 可打印并写入指定目录
+security:
+  connector_token: ""
+
 # 认知滤网：写入门控 / 习惯化 / 认知屏蔽 / 忘却（§8.5）
 filter:
   enabled: true
@@ -278,8 +286,11 @@ personality:
 # 桌面连接器：注册 desktop_observe（看屏幕/截图）与 desktop_input（鼠标键盘窗口）。
 # 光开这里不够，还要把桥跑起来：node connectors/desktop/bridge.mjs（默认 47614）。
 # 写类动作（点击/按键）仍受安全档位熔断，档位 ≥2 时只读放行。
+# 桌面连接器（可选，默认关闭）：开启后她可以截屏、看前台窗口、注入键鼠。
+# 这是本插件里权限最高的一项，只在你明确需要时才打开。
+# 桥接服务本身也要令牌（见 security 段），两者缺一不可。
 desktop:
-  enabled: true
+  enabled: false
   bridge_url: http://127.0.0.1:47614
 
 # 抖音联动（可选）：只读 dsh-douyin-browser-local 的共享记忆库，

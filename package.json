@@ -1,6 +1,6 @@
 {
   "name": "dsh-daughter",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "人格—记忆—状态—技能—反射 五维陪伴插件 / Persona, long-term memory, state, skills and reflexes for DeepSeek Harness",
   "type": "module",
   "license": "MIT",
@@ -51,7 +51,8 @@
     "check:link": "node --import tsx scripts/link-check.ts",
     "filter:sweep": "node --import tsx scripts/filter-sweep.ts",
     "reset": "node --import tsx scripts/reset.ts",
-    "memory:doctor": "node --import tsx scripts/memory-doctor.ts"
+    "memory:doctor": "node --import tsx scripts/memory-doctor.ts",
+    "connector:token": "node --import tsx scripts/connector-token.ts"
   },
   "dependencies": {
     "yaml": "^2.9.1"

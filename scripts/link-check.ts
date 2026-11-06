@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 适配性 / 联动性自检。
  *
  * 用法：`npm run check:link`（会用一个临时数据目录与临时端口，不碰真实存档）
@@ -9,7 +9,7 @@
  *
  * 输出 PASS / WARN / FAIL，有 FAIL 时以非 0 退出。
  */
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createDaughterPlugin } from '../src/index.js';
@@ -62,10 +62,22 @@ async function json(path: string, init?: RequestInit): Promise<{ status: number;
   return { status: response.status, body: text ? JSON.parse(text) : null };
 }
 
+/**
+ * 桥接端点从 v0.6.1 起要求令牌（§12.2），自检脚本同样是"连接器"，
+ * 必须像 MOD / 桌面桥那样带上 `x-dsh-token`，顺带验证这条链路真的通。
+ */
+let TOKEN = '';
+const authHeaders = (extra: Record<string, string> = {}): Record<string, string> =>
+  TOKEN ? { ...extra, 'x-dsh-token': TOKEN } : extra;
+
+function get(path: string): Promise<{ status: number; body: any }> {
+  return json(path, { headers: authHeaders() });
+}
+
 function post(path: string, payload: unknown): Promise<{ status: number; body: any }> {
   return json(path, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: authHeaders({ 'content-type': 'application/json' }),
     body: JSON.stringify(payload),
   });
 }
@@ -188,6 +200,9 @@ async function main(): Promise<void> {
 
   const plugin = createHost(hostCtx as any, { storage: { data_root: join(root, 'live') }, vpet: { body_link: { max_influence: 0.9, fatigue_weight: 0.9 } } } as any, process.cwd());
 
+  // createHost 会在 data_root 下生成连接器令牌；自检后续的 /vpet/* 请求都要带上它
+  TOKEN = readFileSync(join(root, 'live', 'brain', 'brainstem', 'connector_token'), 'utf8').trim();
+
   const preStep = () => {
     const handler = listeners.get('agent/pre-step')?.[0];
     if (!handler) throw new Error('宿主未注册 agent/pre-step');
@@ -209,10 +224,25 @@ async function main(): Promise<void> {
 
   await new Promise((resolve) => setTimeout(resolve, 120));
 
-  await check('桥接端点在线', async () => {
-    const { status, body } = await json('/health');
+  await check('桥接端点在线（健康检查不再泄露队列信息）', async () => {
+    const { status, body } = await get('/health');
     if (status !== 200 || body?.ok !== true) throw new Error(`/health 返回 ${status}`);
-    return `character=${body.character}，vpet.pending=${body.vpet.pending}`;
+    if (body.character !== undefined || body.vpet !== undefined) {
+      throw new Error('/health 仍在暴露队列与角色信息');
+    }
+    return `auth=${body.auth}`;
+  });
+
+  await check('无令牌 → 401，浏览器来源 → 403', async () => {
+    const anonymous = await json('/vpet/events?since=0');
+    if (anonymous.status !== 401) throw new Error(`无令牌访问返回 ${anonymous.status}，应为 401`);
+    const wrong = await json('/vpet/status', { headers: { 'x-dsh-token': 'f'.repeat(64) } });
+    if (wrong.status !== 401) throw new Error(`错误令牌返回 ${wrong.status}，应为 401`);
+    const browser = await json('/vpet/events?since=0', {
+      headers: authHeaders({ origin: 'http://evil.example', 'sec-fetch-mode': 'cors' }),
+    });
+    if (browser.status !== 403) throw new Error(`浏览器来源返回 ${browser.status}，应为 403`);
+    return '匿名 401 / 错误令牌 401 / 浏览器来源 403';
   });
 
   await check('用户消息 → 桌宠 thinking 事件', async () => {
@@ -221,7 +251,7 @@ async function main(): Promise<void> {
       kind: 'enter',
       messages: [message],
     }));
-    const { body } = await json('/vpet/events?since=0');
+    const { body } = await get('/vpet/events?since=0');
     const kinds = (body.events ?? []).map((event: any) => event.kind);
     if (!kinds.includes('thinking')) throw new Error(`事件里没有 thinking：${kinds.join(',')}`);
     return `队列 ${body.events.length} 条：${kinds.join(' / ')}`;
@@ -239,11 +269,11 @@ async function main(): Promise<void> {
         },
       },
     });
-    const before = await json('/vpet/events?since=0');
+    const before = await get('/vpet/events?since=0');
     const reply = (before.body.events ?? []).find((event: any) => event.kind === 'reply');
     if (!reply) throw new Error('没有 reply 事件');
     const acked = await post('/vpet/events/ack', { seq: before.body.seq });
-    const after = await json('/vpet/events?since=0');
+    const after = await get('/vpet/events?since=0');
     if ((after.body.events ?? []).length !== 0) {
       const left = (after.body.events ?? []).map((event: any) => `${event.kind}#${event.seq}`).join(',');
       throw new Error(
@@ -274,7 +304,7 @@ async function main(): Promise<void> {
     });
     if (beat.body?.body?.strength !== 0.05) throw new Error(`心跳未回身体信号：${JSON.stringify(beat.body)}`);
 
-    const status = await json('/vpet/status');
+    const status = await get('/vpet/status');
     if (status.body?.bridge?.strengthPct !== 5) throw new Error('/vpet/status 未带体力');
 
     const now = new Date().toISOString();
@@ -286,7 +316,7 @@ async function main(): Promise<void> {
       kind: 'enter',
       messages: [message],
     }));
-    const { body } = await json('/vpet/events?since=0');
+    const { body } = await get('/vpet/events?since=0');
     const motion = (body.events ?? []).find((event: any) => event.kind === 'motion');
     if (!motion || motion.graph !== 'Sleep') throw new Error(`情绪动作未下发：${JSON.stringify(body.events)}`);
     return `体力 5% → 有效疲劳 ${l5.fatigue.toFixed(2)} → 动作 ${motion.graph}`;
@@ -298,13 +328,13 @@ async function main(): Promise<void> {
       capabilities: { graphs: ['Say', 'Sleep', 'Touch_Head'], actions: ['animate', 'move'], queue: true },
       state: { busy: true, reason: 'player', playerActive: true, queued: 0, dropped: 0 },
     });
-    await post('/vpet/events/ack', { seq: (await json('/vpet/events?since=0')).body.seq });
+    await post('/vpet/events/ack', { seq: (await get('/vpet/events?since=0')).body.seq });
     const message = userMessage('还在忙吗');
     await preStep()({ agent: { session }, messages: [message], turn: 3, step: 1 }, async () => ({
       kind: 'enter',
       messages: [message],
     }));
-    const { body } = await json('/vpet/events?since=0');
+    const { body } = await get('/vpet/events?since=0');
     const motions = (body.events ?? []).filter((event: any) => event.kind === 'motion');
     if (motions.length > 0) throw new Error(`让行失败，仍下发 motion：${JSON.stringify(motions)}`);
     return 'playerActive=true 时未下发 motion';
@@ -319,7 +349,7 @@ async function main(): Promise<void> {
     if (bad.status !== 400) throw new Error(`不支持的动画应 400，实际 ${bad.status}`);
     const good = await post('/vpet/control', { action: 'animate', graph: 'Say', loops: 2, text: '在的' });
     if (good.status !== 200) throw new Error(`合法动画被拒：${good.status}`);
-    const { body } = await json('/vpet/events?since=0');
+    const { body } = await get('/vpet/events?since=0');
     const motion = (body.events ?? []).find((event: any) => event.kind === 'motion' && event.graph === 'Say');
     if (!motion) throw new Error('接管动作未入队');
     return `非法 graph 400，Say 入队（loops=${motion.loops}）`;
@@ -363,7 +393,7 @@ async function main(): Promise<void> {
   });
 
   await check('插件缺席时桌宠侧仍可独立（/vpet/status 无 MOD 上报）', async () => {
-    const { status, body } = await json('/vpet/status');
+    const { status, body } = await get('/vpet/status');
     if (status !== 200) throw new Error('/vpet/status 不可用');
     if (typeof body.consumer?.online !== 'boolean') throw new Error('缺少在线判定');
     return `consumer.online=${body.consumer.online}，bridge.online=${body.bridge.online}（判定逻辑独立于数据是否新鲜）`;
@@ -375,11 +405,11 @@ async function main(): Promise<void> {
       kind: 'enter',
       messages: [message],
     }));
-    const first = await json('/vpet/events');
+    const first = await get('/vpet/events');
     if ((first.body.events ?? []).length === 0) throw new Error('旧版领取为空');
-    const second = await json('/vpet/events');
+    const second = await get('/vpet/events');
     if ((second.body.events ?? []).length !== 0) throw new Error('旧版游标未前进，重复领取');
-    const say = await json('/vpet/say');
+    const say = await get('/vpet/say');
     if (say.status !== 200) throw new Error(`/vpet/say 返回 ${say.status}`);
     return `首次 ${first.body.events.length} 条，二次 0 条，/vpet/say 可用`;
   });

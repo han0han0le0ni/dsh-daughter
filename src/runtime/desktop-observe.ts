@@ -6,6 +6,7 @@
  */
 import type { Logger, ToolGate } from '../util.js';
 import { checkToolGate } from '../util.js';
+import { tokenHeader } from './connector-auth.js';
 
 const DEFAULT_BRIDGE_URL = 'http://127.0.0.1:47614';
 
@@ -39,7 +40,10 @@ interface FetchResponseLike {
   text(): Promise<string>;
 }
 
-type FetchLike = (url: string, init?: { signal?: AbortSignal }) => Promise<FetchResponseLike>;
+type FetchLike = (
+  url: string,
+  init?: { signal?: AbortSignal; headers?: Record<string, string> },
+) => Promise<FetchResponseLike>;
 
 interface ToolRenderBlock {
   type: 'text' | 'image';
@@ -61,6 +65,8 @@ interface ToolDefinitionLike {
 
 export interface DesktopObserveOptions {
   bridgeUrl?: string;
+  /** 连接器令牌（§12.2）。桥接侧无令牌或令牌不符一律 401，环回地址不豁免 */
+  token?: string;
   fetchImpl?: FetchLike;
   timeoutMs?: number;
   logger?: Partial<Logger>;
@@ -98,11 +104,12 @@ async function fetchJson(
   fetchImpl: FetchLike,
   url: string,
   timeoutMs: number,
+  headers: Record<string, string> = {},
 ): Promise<unknown> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetchImpl(url, { signal: controller.signal });
+    const response = await fetchImpl(url, { headers, signal: controller.signal });
     if (!response.ok) {
       const body = await response.text().catch(() => '');
       throw new Error(`${url} 返回 ${response.status}${body ? `：${body.slice(0, 200)}` : ''}`);
@@ -117,11 +124,12 @@ async function fetchBinary(
   fetchImpl: FetchLike,
   url: string,
   timeoutMs: number,
+  headers: Record<string, string> = {},
 ): Promise<Uint8Array> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetchImpl(url, { signal: controller.signal });
+    const response = await fetchImpl(url, { headers, signal: controller.signal });
     if (!response.ok) {
       const body = await response.text().catch(() => '');
       throw new Error(`${url} 返回 ${response.status}${body ? `：${body.slice(0, 200)}` : ''}`);
@@ -140,6 +148,7 @@ export function createDesktopObserveTool(options: DesktopObserveOptions = {}): T
     options.fetchImpl ?? (globalThis.fetch as unknown as FetchLike | undefined);
   const timeoutMs = options.timeoutMs ?? 15000;
   const logger = options.logger;
+  const authHeaders = tokenHeader(String(options.token ?? ''));
 
   return {
     name: 'desktop_observe',
@@ -232,7 +241,7 @@ export function createDesktopObserveTool(options: DesktopObserveOptions = {}): T
 
       let foreground: Record<string, unknown>;
       try {
-        const payload = (await fetchJson(fetchImpl, `${bridgeUrl}/foreground`, timeoutMs)) as {
+        const payload = (await fetchJson(fetchImpl, `${bridgeUrl}/foreground`, timeoutMs, authHeaders)) as {
           foreground?: Record<string, unknown>;
         };
         foreground = payload.foreground ?? {};
@@ -255,9 +264,9 @@ export function createDesktopObserveTool(options: DesktopObserveOptions = {}): T
       shotParams.set('crop_height', String(cropHeight));
       const shotUrl = `${bridgeUrl}/screenshot?${shotParams.toString()}`;
       const [imageBytes, media, windows] = await Promise.all([
-        fetchBinary(fetchImpl, shotUrl, timeoutMs),
+        fetchBinary(fetchImpl, shotUrl, timeoutMs, authHeaders),
         includeMedia
-          ? fetchJson(fetchImpl, `${bridgeUrl}/media`, timeoutMs)
+          ? fetchJson(fetchImpl, `${bridgeUrl}/media`, timeoutMs, authHeaders)
               .then((payload) => (payload as { media?: Record<string, unknown> }).media)
               .catch((error) => {
                 logger?.debug?.('desktop_observe: 媒体信息不可用', { error: String(error) });
@@ -265,7 +274,7 @@ export function createDesktopObserveTool(options: DesktopObserveOptions = {}): T
               })
           : Promise.resolve(undefined),
         includeWindows
-          ? fetchJson(fetchImpl, `${bridgeUrl}/windows`, timeoutMs)
+          ? fetchJson(fetchImpl, `${bridgeUrl}/windows`, timeoutMs, authHeaders)
               .then((payload) => {
                 const list = (payload as { windows?: Array<Record<string, unknown>> }).windows ?? [];
                 return list
@@ -368,7 +377,12 @@ export async function readForeground(options: DesktopObserveOptions = {}): Promi
   const fetchImpl = options.fetchImpl ?? (globalThis.fetch as unknown as FetchLike | undefined);
   if (!fetchImpl) return null;
   try {
-    const payload = (await fetchJson(fetchImpl, `${bridgeUrl}/foreground`, options.timeoutMs ?? 1500)) as {
+    const payload = (await fetchJson(
+      fetchImpl,
+      `${bridgeUrl}/foreground`,
+      options.timeoutMs ?? 1500,
+      tokenHeader(String(options.token ?? '')),
+    )) as {
       foreground?: DesktopForeground;
     };
     return payload.foreground ?? null;

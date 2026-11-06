@@ -2,10 +2,12 @@
 
 - 时间：2026-11-04 首测，2026-11-05 复核，**2026-11-06 复跑**（本轮数值以复跑为准）
 - 方式：`npm run check:link`（`scripts/link-check.ts`），临时数据目录 + 临时端口（`DSH_DAUGHTER_BRIDGE_PORT`，默认 47912），不碰真实存档
-- 结果：**PASS 18 / WARN 0 / FAIL 0**；`npm test` **203 项全绿**；`tsc --noEmit` 无错；`dist` 新鲜度检查 PASS
+- 结果：**PASS 19 / WARN 0 / FAIL 0**；`npm test` **211 项全绿**；`tsc --noEmit` 无错；`dist` 新鲜度检查 PASS
 - 前置：2026-11-05 复核前 `dist` 曾落后于 `src`，首跑 PASS 17 / WARN 1，执行 `npm run build` 后转绿；2026-11-06 复跑时 `dist` 已晚于全部 `src`；行为动机模块落地后再次 `npm run build`，`dist` 17:50:26 晚于 `src` 17:49:39，check:link 复跑仍 PASS 18
 
 > 2026-11-06 新增性格演化模块（`tests/personality.test.ts` 9 项），不影响 18 项自检结论。
+>
+> 2026-11-07 新增连接器认证（`tests/connector-auth.test.ts` 8 项）：桥接 47612、桌面 47614、安卓 47613 全部要求 `x-dsh-token`，无令牌 503、错令牌 401、浏览器来源 403；`/health` 只回 `{ ok, auth }`。自检同步加了「无令牌 401 / 浏览器 403」一项，18 → 19 项。
 >
 > 同轮新增行为动机模块（`tests/motivation.test.ts` 14 项，测试 112 → 126）：决策层改用阈值 × 分数两段式判定，人格走「阈值偏移 + 方向舵」双通路，零信号恒不触发。18 项自检结论不变。
 >

@@ -755,6 +755,14 @@ export interface DaughterConfig {
         backend: 'sqlite';
         single_writer: boolean;
     };
+    /**
+     * 本机连接器的认证配置（§12.2）。桥接端点（47612）与桌面连接器（47614）都要求令牌；
+     * 留空表示"用 `brain/brainstem/connector_token` 里的自动令牌"，不会退化成无认证。
+     */
+    security: {
+        /** 显式令牌（≥16 字符）。多机/容器部署时固定用；留空则读取或生成文件令牌 */
+        connector_token: string;
+    };
     decay: {
         weight_decay_rate: number;
         recall_boost: number;

@@ -18,6 +18,9 @@ star_map/
 # 文档截图可能包含个人界面内容，默认不入库（需要时用 -f 单独加）
 docs/screenshots/
 
+# 连接器令牌：本机秘密，任何时候都不入库
+connectors/**/token.txt
+
 # 杂项
 *.log
 .DS_Store

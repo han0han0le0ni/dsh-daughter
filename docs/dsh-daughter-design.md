@@ -1147,8 +1147,12 @@ personality:
   evidence_cap: 200             # 证据链保留条数（面板只给事实，不给类型标签）
 
 desktop:
-  enabled: false               # P9 尚未实现；true 只会在启动时告警
+  enabled: false               # 默认关闭：屏幕画面与键鼠注入属于高危能力，需显式打开；打开后仍需令牌（§12.2）
   bridge_url: http://127.0.0.1:47614
+
+# 本机连接器认证（见 §12.2）：桥接 47612 / 桌面 47614 / 安卓 47613 都要求令牌
+security:
+  connector_token: ""          # 留空 = 用 brain/brainstem/connector_token；≥16 字符则固定用它
 
 # 认知滤网（见 §8.5）：写入门控 / 习惯化 / 屏蔽 / 忘却
 filter:
@@ -1255,6 +1259,50 @@ vpet:
 ```
 
 反向表现补充：MOT 资产带 `padMatch` 时，`assetInvoke` 在没有显式 `motionId` 的情况下按 PAD 距离挑最近的已固化动作；一个 `padMatch` 都没有就报 `motion_id_missing`，不做猜测。
+
+### 12.2 端点认证（v0.6.1）
+
+**威胁模型**：桥接端点（47612）、桌面连接器（47614）、安卓连接器（47613）都只监听 `127.0.0.1`，但**环回地址不是权限边界**——本机任何网页都能向它们发请求（`no-cors` 简单请求连预检都省了）。一旦被页面命中：
+
+| 端点 | 后果 |
+| --- | --- |
+| `POST /vpet/ingest` | 往她的记忆里写任意文本（"共同经历"会被当成真的） |
+| `GET /vpet/events` | 把她说过的、正在说的话读走 |
+| `GET /screenshot` / `/stream` | 实时看你的屏幕 |
+| `POST /input`、`POST /action` | 注入键鼠、操作手机 |
+
+**方案**：三条规则，全部默认拒绝。
+
+| 规则 | 实现 |
+| --- | --- |
+| 令牌 | 数据路由要求 `x-dsh-token`（或 `Authorization: Bearer`），先各自 sha256 再 `timingSafeEqual`，不按长度提前返回 |
+| 浏览器来源 | 带 `Origin` / `Sec-Fetch-Site` / http(s) `Referer` 的请求一律 **403**，令牌正确也不放行。**不能用 `Sec-Fetch-Mode` 判断**——Node 自带的 fetch（undici）也会发 `sec-fetch-mode: cors`，用它会把插件自己的工具误杀 |
+| 失败关闭 | 服务端拿不到令牌 → **503**；令牌不符 → **401**；连接器进程拿不到令牌**直接拒绝启动**，代码里不存在"本机免认证"分支 |
+
+令牌来源优先级：
+
+```
+security.connector_token（≥16 字符，显式固定，多机/容器用）
+  → brain/brainstem/connector_token（0600，首次启动自动生成 32 字节 hex）
+    → 不可用（fail closed）
+```
+
+填了但短于 16 字符的显式值会被忽略并告警，**不会**退化成"用短令牌凑合"。
+
+`/health` 只返回 `{ ok: true, auth: "token" }`：队列长度、窗口标题、设备串号、可用动作清单都不再从这里泄露（以前等于给本机扫描器免费做一次能力探测）。
+
+**各端如何拿令牌**：
+
+| 端 | 方式 |
+| --- | --- |
+| 插件自身（`desktop_observe` / `desktop_input` / `vpet_control` / 开口前的场景探测） | `createHost` 解析一次，经 `connectorToken` 传入，运行期不再读盘 |
+| VPet MOD | MOD 目录 `token.txt`，或环境变量 `DSH_DAUGHTER_TOKEN`（拿不到就照常请求，让服务端 401 并记日志） |
+| 独立壳 `pet-shell` | 可执行文件目录 `token.txt`，或环境变量 |
+| `connectors/{vpet,desktop,android}/bridge.mjs` | 默认读插件令牌文件；`--token` / `DSH_DAUGHTER_TOKEN` 覆盖 |
+
+**轮换**：`npm run connector:token -- --rotate`，再把新值同步给 MOD 与壳；`--write-to <目录>` 可直接写 `token.txt`。
+
+**默认关闭**：`desktop.enabled` 默认 `false`。桌面连接器提供的是屏幕画面与键鼠注入，属于"开了就有风险"的能力，必须用户显式打开；打开后仍然要令牌，两者缺一不可。
 
 ---
 

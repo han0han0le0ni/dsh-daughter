@@ -27,8 +27,17 @@
     └── DshDaughter\
         ├── info.lps                 # MOD 清单（vupmod#DshDaughter / author / gamever 11074）
         └── plugin\
-            └── DshDaughter.dll      # .NET 编译产物
+            ├── DshDaughter.dll      # .NET 编译产物
+            └── token.txt            # 连接器令牌（v0.6.1 起必需，见下）
 ```
+
+**令牌怎么拿**：插件端点不再接受"本机来的就放行"（详见设计文档 §12.2）。先让插件跑起来一次（会生成 `brain/brainstem/connector_token`），然后：
+
+```bash
+npm run connector:token -- --write-to "<VPet 安装目录>\mod\DshDaughter\plugin"
+```
+
+也可以手动把 `brain/brainstem/connector_token` 的内容复制成 `plugin/token.txt`，或设置环境变量 `DSH_DAUGHTER_TOKEN`。令牌缺失时 MOD 仍会启动，但请求会被 401 拒绝，日志里会写明原因。
 
 **怎么编译**（MOD 源码在 `connectors/vpet/mod-src/`，目标框架 `net10.0-windows`）：
 

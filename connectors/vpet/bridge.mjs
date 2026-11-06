@@ -12,7 +12,9 @@
  *   node connectors/vpet/bridge.mjs --vpet "E:\...\VPet" --endpoint http://127.0.0.1:47612
  */
 import { readFile, readdir, stat } from 'node:fs/promises';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const args = process.argv.slice(2);
 function flag(name) {
@@ -27,6 +29,43 @@ const VPET_ROOT = option('vpet', process.env.VPET_ROOT ?? 'E:\\SteamLibrary\\ste
 const ENDPOINT = option('endpoint', process.env.DSH_DAUGHTER_ENDPOINT ?? 'http://127.0.0.1:47612');
 const INTERVAL_MS = Number(option('interval', '30')) * 1000;
 const ONCE = flag('once');
+
+/** 默认令牌文件：插件根目录 brain/brainstem/connector_token */
+const DEFAULT_TOKEN_FILE = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '..',
+  '..',
+  'brain',
+  'brainstem',
+  'connector_token',
+);
+
+function readToken() {
+  const explicit = String(option('token', process.env.DSH_DAUGHTER_TOKEN ?? '')).trim();
+  if (explicit) return explicit;
+  const file = option('token-file', process.env.DSH_DAUGHTER_TOKEN_FILE ?? DEFAULT_TOKEN_FILE);
+  try {
+    if (!existsSync(file)) return '';
+    const raw = readFileSync(file, 'utf8').trim();
+    return raw.length >= 16 ? raw : '';
+  } catch {
+    return '';
+  }
+}
+
+const TOKEN = readToken();
+if (!TOKEN) {
+  console.error(
+    '[vpet-bridge] 缺少连接器令牌，已拒绝启动。\n' +
+      '  先启动一次插件生成 brain/brainstem/connector_token，或用 --token / DSH_DAUGHTER_TOKEN 指定。',
+  );
+  process.exit(1);
+}
+
+/** 出站请求统一带令牌：插件的 /vpet/* 不再对"本机来的"放行 */
+function authHeaders(extra = {}) {
+  return { ...extra, 'x-dsh-token': TOKEN };
+}
 
 function log(...parts) {
   console.log(`[vpet-bridge] ${parts.join(' ')}`);
@@ -131,7 +170,7 @@ export function diffSnapshots(prev, next) {
 async function ingest(text) {
   const response = await fetch(`${ENDPOINT}/vpet/ingest`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: authHeaders({ 'content-type': 'application/json' }),
     body: JSON.stringify({ text }),
   });
   if (!response.ok) throw new Error(`ingest ${response.status}: ${await response.text()}`);
@@ -142,7 +181,7 @@ async function ingest(text) {
 async function heartbeat(snapshot, file, mtimeMs) {
   const response = await fetch(`${ENDPOINT}/vpet/heartbeat`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: authHeaders({ 'content-type': 'application/json' }),
     body: JSON.stringify({
       saveFound: snapshot !== null,
       saveFile: file ?? undefined,

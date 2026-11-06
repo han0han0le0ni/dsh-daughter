@@ -41,12 +41,15 @@ class Daughter {
     seenSessions = new Set();
     rng;
     onMotion;
+    /** 连接器令牌：主动开口探测桌面桥时带上（§12.2） */
+    connectorToken;
     constructor(options) {
         this.logger = options.logger ?? silentLogger;
         this.config = options.config ?? loadConfig(options.pluginRoot, this.logger);
         this.dataRoot = resolveDataRoot(options.pluginRoot, this.config);
         this.rng = createRng(this.config.seed);
         this.onMotion = options.onMotion;
+        this.connectorToken = String(options.connectorToken ?? '');
     }
     async onUserMessage(input) {
         const { ctx, text } = input;
@@ -562,7 +565,11 @@ class Daughter {
         // 看得见屏幕的话，先看一眼她现在是不是在开会/打游戏。
         // 桥接没在跑会静默返回 null，按"看不见"处理，不会因此不再开口。
         const foreground = this.config.desktop.enabled
-            ? await readForeground({ bridgeUrl: this.config.desktop.bridge_url, timeoutMs: 1200 })
+            ? await readForeground({
+                bridgeUrl: this.config.desktop.bridge_url,
+                token: this.connectorToken,
+                timeoutMs: 1200,
+            })
             : null;
         const plan = evaluateSpeak({
             now: input.now,

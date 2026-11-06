@@ -7,6 +7,7 @@
  */
 import type { Logger, ToolGate } from '../util.js';
 import { checkToolGate } from '../util.js';
+import { tokenHeader } from './connector-auth.js';
 
 const DEFAULT_BRIDGE_URL = 'http://127.0.0.1:47614';
 const ACTIONS = ['move', 'click', 'drag', 'scroll', 'key', 'type', 'activate', 'screen'] as const;
@@ -49,6 +50,8 @@ interface InputResponse {
 
 export interface DesktopInputOptions {
   bridgeUrl?: string;
+  /** 连接器令牌（§12.2）：/input 能注入键鼠，没有令牌时桥接直接 401 */
+  token?: string;
   fetchImpl?: FetchLike;
   timeoutMs?: number;
   logger?: Partial<Logger>;
@@ -124,6 +127,7 @@ export function createDesktopInputTool(options: DesktopInputOptions = {}): ToolD
   const bridgeUrl = (options.bridgeUrl ?? DEFAULT_BRIDGE_URL).replace(/\/+$/, '');
   const fetchImpl = options.fetchImpl ?? (globalThis.fetch as unknown as FetchLike);
   const timeoutMs = options.timeoutMs ?? 15000;
+  const authHeaders = tokenHeader(String(options.token ?? ''));
 
   return {
     name: 'desktop_input',
@@ -267,7 +271,7 @@ export function createDesktopInputTool(options: DesktopInputOptions = {}): ToolD
       try {
         const response = await fetchImpl(`${bridgeUrl}/input`, {
           method: 'POST',
-          headers: { 'content-type': 'application/json' },
+          headers: { 'content-type': 'application/json', ...authHeaders },
           body: JSON.stringify(payload),
           signal: controller.signal,
         });

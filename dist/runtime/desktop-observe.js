@@ -1,4 +1,5 @@
 import { checkToolGate } from '../util.js';
+import { tokenHeader } from './connector-auth.js';
 const DEFAULT_BRIDGE_URL = 'http://127.0.0.1:47614';
 function clampInteger(value, fallback, min, max) {
     const number = Number(value);
@@ -14,11 +15,11 @@ function optionalInteger(value, min, max) {
         return undefined;
     return Math.min(max, Math.max(min, Math.round(number)));
 }
-async function fetchJson(fetchImpl, url, timeoutMs) {
+async function fetchJson(fetchImpl, url, timeoutMs, headers = {}) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-        const response = await fetchImpl(url, { signal: controller.signal });
+        const response = await fetchImpl(url, { headers, signal: controller.signal });
         if (!response.ok) {
             const body = await response.text().catch(() => '');
             throw new Error(`${url} 返回 ${response.status}${body ? `：${body.slice(0, 200)}` : ''}`);
@@ -29,11 +30,11 @@ async function fetchJson(fetchImpl, url, timeoutMs) {
         clearTimeout(timer);
     }
 }
-async function fetchBinary(fetchImpl, url, timeoutMs) {
+async function fetchBinary(fetchImpl, url, timeoutMs, headers = {}) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-        const response = await fetchImpl(url, { signal: controller.signal });
+        const response = await fetchImpl(url, { headers, signal: controller.signal });
         if (!response.ok) {
             const body = await response.text().catch(() => '');
             throw new Error(`${url} 返回 ${response.status}${body ? `：${body.slice(0, 200)}` : ''}`);
@@ -49,6 +50,7 @@ export function createDesktopObserveTool(options = {}) {
     const fetchImpl = options.fetchImpl ?? globalThis.fetch;
     const timeoutMs = options.timeoutMs ?? 15000;
     const logger = options.logger;
+    const authHeaders = tokenHeader(String(options.token ?? ''));
     return {
         name: 'desktop_observe',
         description: '看一眼当前电脑屏幕：返回前台窗口、正在播放的媒体（如有）和一帧压缩截图。截图默认叠加亮绿色鼠标十字准星；' +
@@ -140,7 +142,7 @@ export function createDesktopObserveTool(options = {}) {
             const cropHeight = clampInteger(args.crop_height, 320, 64, 4096);
             let foreground;
             try {
-                const payload = (await fetchJson(fetchImpl, `${bridgeUrl}/foreground`, timeoutMs));
+                const payload = (await fetchJson(fetchImpl, `${bridgeUrl}/foreground`, timeoutMs, authHeaders));
                 foreground = payload.foreground ?? {};
             }
             catch (error) {
@@ -162,9 +164,9 @@ export function createDesktopObserveTool(options = {}) {
             shotParams.set('crop_height', String(cropHeight));
             const shotUrl = `${bridgeUrl}/screenshot?${shotParams.toString()}`;
             const [imageBytes, media, windows] = await Promise.all([
-                fetchBinary(fetchImpl, shotUrl, timeoutMs),
+                fetchBinary(fetchImpl, shotUrl, timeoutMs, authHeaders),
                 includeMedia
-                    ? fetchJson(fetchImpl, `${bridgeUrl}/media`, timeoutMs)
+                    ? fetchJson(fetchImpl, `${bridgeUrl}/media`, timeoutMs, authHeaders)
                         .then((payload) => payload.media)
                         .catch((error) => {
                         logger?.debug?.('desktop_observe: 媒体信息不可用', { error: String(error) });
@@ -172,7 +174,7 @@ export function createDesktopObserveTool(options = {}) {
                     })
                     : Promise.resolve(undefined),
                 includeWindows
-                    ? fetchJson(fetchImpl, `${bridgeUrl}/windows`, timeoutMs)
+                    ? fetchJson(fetchImpl, `${bridgeUrl}/windows`, timeoutMs, authHeaders)
                         .then((payload) => {
                         const list = payload.windows ?? [];
                         return list
@@ -251,7 +253,7 @@ export async function readForeground(options = {}) {
     if (!fetchImpl)
         return null;
     try {
-        const payload = (await fetchJson(fetchImpl, `${bridgeUrl}/foreground`, options.timeoutMs ?? 1500));
+        const payload = (await fetchJson(fetchImpl, `${bridgeUrl}/foreground`, options.timeoutMs ?? 1500, tokenHeader(String(options.token ?? ''))));
         return payload.foreground ?? null;
     }
     catch {

@@ -4,6 +4,14 @@ import { createDesktopInput, InputValidationError, normalizeInput } from '../con
 import { createDesktopInputTool, registerDesktopInputTool } from '../src/runtime/desktop-input.js';
 import { startDesktopBridge } from '../connectors/desktop/bridge.mjs';
 
+// 连接器端点要求令牌（§12.2）：测试同样要带，顺带覆盖"认证通过才可用"这条链路
+const TEST_TOKEN = 'test-token-0123456789abcdef';
+const authFetch = (url: string, init: RequestInit = {}): Promise<Response> =>
+  fetch(url, {
+    ...init,
+    headers: { ...((init.headers as Record<string, string> | undefined) ?? {}), 'x-dsh-token': TEST_TOKEN },
+  });
+
 function jsonResponse(status: number, body: unknown) {
   return {
     ok: status >= 200 && status < 300,
@@ -84,6 +92,7 @@ test('desktop_input：桥接 /input 路由与校验错误', async () => {
   const received: Array<Record<string, unknown>> = [];
   let closed = false;
   const bridge = await startDesktopBridge({
+    token: TEST_TOKEN,
     endpoint: 'http://127.0.0.1:9',
     port: 0,
     backend: 'powershell',
@@ -103,10 +112,10 @@ test('desktop_input：桥接 /input 路由与校验错误', async () => {
 
   try {
     const base = `http://127.0.0.1:${bridge.port}`;
-    const health = await fetch(`${base}/health`).then((response) => response.json());
-    assert.equal(health.input, true);
+    const health = await authFetch(`${base}/health`).then((response) => response.json());
+    assert.equal(health.auth, 'token');
 
-    const ok = await fetch(`${base}/input`, {
+    const ok = await authFetch(`${base}/input`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ action: 'screen' }),
@@ -117,7 +126,7 @@ test('desktop_input：桥接 /input 路由与校验错误', async () => {
     assert.deepEqual(body.screen, { width: 1920, height: 1080 });
     assert.deepEqual(received[0], { action: 'screen', normalized: false });
 
-    const invalid = await fetch(`${base}/input`, {
+    const invalid = await authFetch(`${base}/input`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ action: 'nope' }),
@@ -126,7 +135,7 @@ test('desktop_input：桥接 /input 路由与校验错误', async () => {
     const invalidBody = await invalid.json();
     assert.match(invalidBody.error, /不支持的 action/);
 
-    const broken = await fetch(`${base}/input`, {
+    const broken = await authFetch(`${base}/input`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: '{',

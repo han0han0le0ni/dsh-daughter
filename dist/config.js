@@ -138,6 +138,10 @@ export const defaultConfig = {
         backend: 'sqlite',
         single_writer: true,
     },
+    security: {
+        // 留空 = 使用 brain/brainstem/connector_token；显式填写则固定用它（§12.2）
+        connector_token: '',
+    },
     decay: {
         weight_decay_rate: 0.02,
         recall_boost: 0.05,
@@ -171,7 +175,9 @@ export const defaultConfig = {
         evidence_cap: 200,
     },
     desktop: {
-        enabled: true,
+        // 默认关闭（§12.2）：桌面连接器能给的是屏幕画面与键鼠注入，
+        // 属于"开了就有风险"的能力，必须由用户显式打开。
+        enabled: false,
         bridge_url: 'http://127.0.0.1:47614',
     },
     douyin: {
@@ -481,6 +487,11 @@ function normalizeConfig(config) {
     // 1 分钟一次已经比自己刷得还勤，再快只是空读；上限一天一次的量级足够追平
     douyin.poll_interval_min = Math.min(1440, Math.max(1, Math.round(num(douyin.poll_interval_min, 10))));
     douyin.max_items = Math.min(20, Math.max(1, Math.round(num(douyin.max_items, 5))));
+    // 连接器认证（§12.2）：空字符串表示"用文件令牌"，过短的显式令牌在运行时会被忽略并告警
+    config.security ??= { connector_token: '' };
+    config.security.connector_token = String(config.security.connector_token ?? '').trim();
+    config.desktop.enabled = config.desktop.enabled === true;
+    config.desktop.bridge_url = String(config.desktop.bridge_url ?? '').trim() || 'http://127.0.0.1:47614';
     return config;
 }
 function num(value, fallback) {

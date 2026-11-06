@@ -1,4 +1,5 @@
 import { checkToolGate } from '../util.js';
+import { tokenHeader } from './connector-auth.js';
 const DEFAULT_BRIDGE_URL = 'http://127.0.0.1:47614';
 const ACTIONS = ['move', 'click', 'drag', 'scroll', 'key', 'type', 'activate', 'screen'];
 function describe(args, value) {
@@ -56,6 +57,7 @@ export function createDesktopInputTool(options = {}) {
     const bridgeUrl = (options.bridgeUrl ?? DEFAULT_BRIDGE_URL).replace(/\/+$/, '');
     const fetchImpl = options.fetchImpl ?? globalThis.fetch;
     const timeoutMs = options.timeoutMs ?? 15000;
+    const authHeaders = tokenHeader(String(options.token ?? ''));
     return {
         name: 'desktop_input',
         description: '操作 Windows 电脑的鼠标、键盘和窗口。先用 desktop_observe 观察屏幕，再用本工具执行操作；' +
@@ -192,7 +194,7 @@ export function createDesktopInputTool(options = {}) {
             try {
                 const response = await fetchImpl(`${bridgeUrl}/input`, {
                     method: 'POST',
-                    headers: { 'content-type': 'application/json' },
+                    headers: { 'content-type': 'application/json', ...authHeaders },
                     body: JSON.stringify(payload),
                     signal: controller.signal,
                 });

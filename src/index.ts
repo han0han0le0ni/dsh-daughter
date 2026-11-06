@@ -78,6 +78,8 @@ export interface PluginOptions {
   pluginRoot: string;
   config?: DaughterConfig;
   logger?: Logger;
+  /** 连接器令牌（§12.2）：主动开口前的场景探测要访问桌面桥，必须带令牌 */
+  connectorToken?: string;
   /** 动作包播放出口（桌宠等连接器消费） */
   onMotion?: (motionId: string) => void;
 }
@@ -111,6 +113,8 @@ class Daughter implements DaughterPlugin {
   private readonly seenSessions = new Set<string>();
   private readonly rng: () => number;
   private readonly onMotion?: (motionId: string) => void;
+  /** 连接器令牌：主动开口探测桌面桥时带上（§12.2） */
+  private readonly connectorToken: string;
 
   constructor(options: PluginOptions) {
     this.logger = options.logger ?? silentLogger;
@@ -118,6 +122,7 @@ class Daughter implements DaughterPlugin {
     this.dataRoot = resolveDataRoot(options.pluginRoot, this.config);
     this.rng = createRng(this.config.seed);
     this.onMotion = options.onMotion;
+    this.connectorToken = String(options.connectorToken ?? '');
   }
 
   async onUserMessage(input: {
@@ -764,7 +769,11 @@ class Daughter implements DaughterPlugin {
     // 看得见屏幕的话，先看一眼她现在是不是在开会/打游戏。
     // 桥接没在跑会静默返回 null，按"看不见"处理，不会因此不再开口。
     const foreground = this.config.desktop.enabled
-      ? await readForeground({ bridgeUrl: this.config.desktop.bridge_url, timeoutMs: 1200 })
+      ? await readForeground({
+          bridgeUrl: this.config.desktop.bridge_url,
+          token: this.connectorToken,
+          timeoutMs: 1200,
+        })
       : null;
 
     const plan = evaluateSpeak(

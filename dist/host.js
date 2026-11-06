@@ -2,9 +2,10 @@ import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { isAbsolute, join } from 'node:path';
-import { loadConfig, mergeConfig } from './config.js';
+import { loadConfig, mergeConfig, resolveDataRoot } from './config.js';
 import { createDaughterPlugin } from './index.js';
 import { normalizeBodySignal } from './runtime/body-link.js';
+import { authorizeConnectorRequest, ensureConnectorToken } from './runtime/connector-auth.js';
 import { registerDesktopObserveTool } from './runtime/desktop-observe.js';
 import { registerDesktopInputTool } from './runtime/desktop-input.js';
 import { MoodMotionGate } from './runtime/mood-motion.js';
@@ -251,24 +252,29 @@ export function parseExternalIngestPath(url) {
     const source = matched[1];
     return EXTERNAL_SOURCES.has(source) ? source : null;
 }
-function startBridge(plugin, pluginContext, config, logger) {
+function startBridge(plugin, pluginContext, config, logger, token) {
+    // 令牌由 createHost 解析一次后传进来：运行期不再读盘，配置改动随下次装载生效
+    if (!token) {
+        logger.warn('dsh-daughter: 桥接端点无令牌可用，所有 /vpet/* 请求将被拒绝');
+    }
     const server = createServer((req, res) => {
         void (async () => {
             try {
                 const requestUrl = new URL(req.url ?? '/', 'http://127.0.0.1');
                 const url = requestUrl.pathname.replace(/\/+$/, '') || '/';
+                // 健康检查保持开放，但只回"活着 + 要认证"这一条：
+                // 队列长度、在线状态这类信息以前能从这里读走，等于给扫描器做侦察
                 if (req.method === 'GET' && url === '/health') {
-                    const status = vpetState.status();
-                    sendJson(res, 200, {
-                        ok: true,
-                        character: config.character_id,
-                        vpet: {
-                            consumerOnline: status.consumer.online,
-                            bridgeOnline: status.bridge.online,
-                            pending: status.pending,
-                            dropped: status.dropped,
-                        },
-                    });
+                    sendJson(res, 200, { ok: true, auth: 'token' });
+                    return;
+                }
+                // §12.2：环回地址不是权限边界。浏览器来源直接拒，其余必须带令牌
+                const verdict = authorizeConnectorRequest(req, token);
+                if (!verdict.ok) {
+                    if (verdict.reason === 'browser_origin') {
+                        logger.warn('dsh-daughter: 拒绝浏览器来源的桥接请求', { url, method: req.method });
+                    }
+                    sendJson(res, verdict.status ?? 401, { ok: false, error: verdict.reason ?? 'unauthorized' });
                     return;
                 }
                 if (req.method === 'GET' && url === '/vpet/status') {
@@ -426,6 +432,9 @@ export function createHost(ctx, rawConfig, pluginRoot) {
     const logger = hostLogger(ctx);
     const base = loadConfig(pluginRoot, logger);
     const config = mergeConfig(base, rawConfig);
+    // 连接器令牌只解析一次：桥接端点与桌面工具共用同一个值，
+    // 拿不到令牌时是空字符串，服务端据此 fail closed（§12.2）
+    const connectorToken = ensureConnectorToken(resolveDataRoot(pluginRoot, config), config.security?.connector_token, logger).token;
     // dsh-pet 挂在宿主自己的 webServer 上，端口只有宿主知道——从服务里取，别让用户抄端口
     const petBaseUrl = petBaseUrlOf(resolveWebServerPort(ctx));
     const petConfig = config.expression.sinks.find((item) => item.type === 'pet');
@@ -468,6 +477,7 @@ export function createHost(ctx, rawConfig, pluginRoot) {
         pluginRoot,
         config,
         logger,
+        connectorToken,
         onMotion: (motionId) => queueEvent({ kind: 'motion', motionId }),
     });
     const lastUserText = new Map();
@@ -805,12 +815,13 @@ export function createHost(ctx, rawConfig, pluginRoot) {
             if (speakTimer && typeof speakTimer.unref === 'function')
                 speakTimer.unref();
             const offStarMap = registerStarMapPanel(ctx, plugin, pluginRoot, config.character_id, logger);
-            const bridge = startBridge(plugin, pluginContext({ id: EXTERNAL_SESSION_ID }, 0), config, logger);
-            const offVpetControl = registerVpetControlTool(ctx, { logger, guard: toolGate });
+            const bridge = startBridge(plugin, pluginContext({ id: EXTERNAL_SESSION_ID }, 0), config, logger, connectorToken);
+            const offVpetControl = registerVpetControlTool(ctx, { logger, guard: toolGate, token: connectorToken });
             const offDesktopObserve = config.desktop?.enabled === false
                 ? () => { }
                 : registerDesktopObserveTool(ctx, {
                     bridgeUrl: config.desktop?.bridge_url,
+                    token: connectorToken,
                     logger,
                     guard: toolGate,
                 });
@@ -818,6 +829,7 @@ export function createHost(ctx, rawConfig, pluginRoot) {
                 ? () => { }
                 : registerDesktopInputTool(ctx, {
                     bridgeUrl: config.desktop?.bridge_url,
+                    token: connectorToken,
                     logger,
                     guard: toolGate,
                 });

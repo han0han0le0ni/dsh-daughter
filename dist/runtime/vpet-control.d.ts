@@ -34,6 +34,8 @@ interface ToolDefinitionLike {
 }
 export interface VpetControlOptions {
     bridgeUrl?: string;
+    /** 连接器令牌（§12.2）：桥接端点不再对"本机来的"放行 */
+    token?: string;
     fetchImpl?: FetchLike;
     timeoutMs?: number;
     logger?: Partial<Logger>;

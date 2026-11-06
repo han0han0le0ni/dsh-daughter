@@ -5,6 +5,14 @@ import { startAndroidBridge } from '../connectors/android/bridge.mjs';
 import { buildAdbArgs, parseDevices, parseForeground } from '../connectors/android/adb.mjs';
 import { parseExternalIngestPath } from '../src/host.js';
 
+// 连接器端点要求令牌（§12.2）：测试同样要带，顺带覆盖"认证通过才可用"这条链路
+const TEST_TOKEN = 'test-token-0123456789abcdef';
+const authFetch = (url: string, init: RequestInit = {}): Promise<Response> =>
+  fetch(url, {
+    ...init,
+    headers: { ...((init.headers as Record<string, string> | undefined) ?? {}), 'x-dsh-token': TEST_TOKEN },
+  });
+
 function listen(server: Server): Promise<number> {
   return new Promise((resolve, reject) => {
     server.once('error', reject);
@@ -74,6 +82,7 @@ test('P9 Android ADB：动作执行与前台事件端到端', async () => {
 
   const calls: string[][] = [];
   const bridge = await startAndroidBridge({
+    token: TEST_TOKEN,
     endpoint: `http://127.0.0.1:${dshPort}`,
     port: 0,
     serial: 'emulator-5554',
@@ -95,11 +104,13 @@ test('P9 Android ADB：动作执行与前台事件端到端', async () => {
   try {
     const base = `http://127.0.0.1:${bridge.port}`;
 
-    const health = await fetch(`${base}/health`).then((response) => response.json());
+    const health = await authFetch(`${base}/health`).then((response) => response.json());
     assert.equal(health.ok, true);
-    assert.equal(health.serial, 'emulator-5554');
+    assert.equal(health.auth, 'token');
+    // 串号与可用动作清单不再从 /health 泄露
+    assert.equal(health.serial, undefined);
 
-    const opened = await fetch(`${base}/action`, {
+    const opened = await authFetch(`${base}/action`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ action: 'open_app', package: 'com.example.music' }),
@@ -117,7 +128,7 @@ test('P9 Android ADB：动作执行与前台事件端到端', async () => {
       '1',
     ]);
 
-    const tapped = await fetch(`${base}/action`, {
+    const tapped = await authFetch(`${base}/action`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ action: 'tap', x: 10, y: 20 }),
@@ -125,7 +136,7 @@ test('P9 Android ADB：动作执行与前台事件端到端', async () => {
     assert.equal(tapped.ok, true);
     assert.deepEqual(calls.at(-1), ['-s', 'emulator-5554', 'shell', 'input', 'tap', '10', '20']);
 
-    const shot = await fetch(`${base}/action`, {
+    const shot = await authFetch(`${base}/action`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ action: 'screenshot' }),
