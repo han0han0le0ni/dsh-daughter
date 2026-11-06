@@ -1,9 +1,11 @@
 # dsh-daughter 适配性 / 联动性检测报告
 
-- 时间：2026-11-04 首测，**2026-11-05 复核**（本轮数值以复核为准）
+- 时间：2026-11-04 首测，2026-11-05 复核，**2026-11-06 复跑**（本轮数值以复跑为准）
 - 方式：`npm run check:link`（`scripts/link-check.ts`），临时数据目录 + 临时端口（`DSH_DAUGHTER_BRIDGE_PORT`，默认 47912），不碰真实存档
-- 结果：**PASS 18 / WARN 0 / FAIL 0**；`npm test` **103 项全绿**；`tsc --noEmit` 无错；`npm run build` 通过
-- 前置：复核前 `dist` 落后于 `src`，首跑为 PASS 17 / WARN 1（仅 `dist` 新旧一项）；执行 `npm run build` 后转绿
+- 结果：**PASS 18 / WARN 0 / FAIL 0**；`npm test` **112 项全绿**；`tsc --noEmit` 无错；`dist` 新鲜度检查 PASS
+- 前置：2026-11-05 复核前 `dist` 曾落后于 `src`，首跑 PASS 17 / WARN 1，执行 `npm run build` 后转绿；2026-11-06 复跑时 `dist` 已晚于全部 `src`，未重新 build
+
+> 2026-11-06 新增性格演化模块（`tests/personality.test.ts` 9 项），不影响 18 项自检结论。
 
 ## 一、适配性（8 项）
 

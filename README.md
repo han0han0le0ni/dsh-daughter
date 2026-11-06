@@ -1,6 +1,6 @@
 # dsh-daughter
 
-给 DSH 的"大脑"插件：**人格分层、长期记忆、运行时状态、技能与反射、安全降级**。它不负责表现层——气泡、形象、动效由桌宠端决定。
+给 DSH 的"大脑"插件：**人格分层、性格演化、长期记忆、运行时状态、技能与反射、安全降级**。它不负责表现层——气泡、形象、动效由桌宠端决定。
 
 > 记忆跟着角色走，不跟着会话走：换对话框、换工作区，关系与经历都还在。
 
@@ -114,7 +114,7 @@ dsh plugin add git+https://github.com/han0han0le0ni/dsh-daughter.git
 ```bash
 npm install
 npm run build        # tsc → dist/
-npm test             # 103 项
+npm test             # 112 项
 npm run check:link   # 适配性 / 联动性自检，18 项
 ```
 
@@ -127,7 +127,7 @@ npm run check:link   # 适配性 / 联动性自检，18 项
 ## 目录
 
 ```text
-src/                插件主体（20 个 TS 文件）
+src/                插件主体（21 个 TS 文件）
   runtime/          记忆、人格、状态、安全、滤网、反射、可观测性
 scripts/            自检与存量治理（link-check / filter-sweep）
 connectors/
@@ -136,7 +136,7 @@ connectors/
   android/          ADB 受限动作
   desktop/          桌面观察与输入
 web/                星图页面（纯静态）
-tests/              13 个测试文件
+tests/              14 个测试文件
 docs/               设计文档、实现核对、评估、检测报告
 ```
 
@@ -147,9 +147,13 @@ docs/               设计文档、实现核对、评估、检测报告
 - [记忆 / 情感评估](docs/dsh-daughter-记忆情感评估.md)——真实数据体检与改进优先级
 - [检测报告](docs/dsh-daughter-检测报告.md)——适配性与联动性自检结果
 
+## 性格演化
+
+出生时五维按有界区间抽样，并把结果写入 `innate` 锚点；同角色同种子可复现。日常闲聊不动人格，只有累积/关键事件才按通道推动五维，任一项不超出锚点 `±0.6`。依恋底色出生只抽安全/焦虑/回避，混乱型只能靠经历演化。面板只展示证据与数值，不输出"你是 X 型"的结论。完整规则见设计文档 §4.8。
+
 ## 当前状态
 
-P0–P8 已落地并核对；P9 外部连接 3/7（VPet 桌宠 / Android / 桌面已通，QQ、抖音、Minecraft、单机待适配器）。已知短板与后续优先级见上面两份文档。
+P0–P8 已落地并核对（当前 `npm test` **112 项全绿**，`check:link` PASS 18）；P9 外部连接 3/7（VPet 桌宠 / Android / 桌面已通，QQ、抖音、Minecraft、单机待适配器）。已知短板与后续优先级见上面两份文档。
 
 ## 隐私
 

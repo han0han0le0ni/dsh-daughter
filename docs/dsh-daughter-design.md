@@ -1,12 +1,12 @@
-# dsh-daughter 设计文档（实现核对稿 v0.4）
+# dsh-daughter 设计文档（实现核对稿 v0.5）
 
 | 项 | 内容 |
 | --- | --- |
 | 插件名 | dsh-daughter |
 | 文档类型 | 设计文档 / 技术评审稿（不含实现代码） |
 | 目标运行形态 | TypeScript / Node 插件 |
-| 状态 | 待评审（P0–P8 已落地并核对，P9 3/7；核对基准：`npm test` 103 项、`npm run check:link` 18 项全绿、`tsc --noEmit` 无错） |
-| 日期 | 2026-11-02（v0.2 2026-11-04；v0.3 加固 + 桌宠弱耦合 2026-11-04；v0.4 认知滤网 + 星图观感 + 记忆情感闭环 2026-11-05） |
+| 状态 | 待评审（P0–P8 已落地并核对，P9 3/7；核对基准：`npm test` 112 项、`npm run check:link` 18 项全绿、`tsc --noEmit` 无错） |
+| 日期 | 2026-11-02（v0.2 2026-11-04；v0.3 加固 + 桌宠弱耦合 2026-11-04；v0.4 认知滤网 + 星图观感 + 记忆情感闭环 2026-11-05；v0.5 性格多样性演化 2026-11-06） |
 | 适用范围 | 人格陪伴、长期记忆、技能与资产、条件反射、多应用连接 |
 
 **阅读约定**
@@ -149,6 +149,12 @@ interface PadState {
   dominance: number; // -1..1
 }
 
+/** 依恋底色：出生只抽前三种，混乱型只能由经历演化出来 */
+type AttachmentType = 'secure' | 'anxious' | 'avoidant' | 'disorganized';
+
+/** 影响人格的"冲击等级"：日常不动人格，关键事件才大步推进 */
+type ImpactKind = 'routine' | 'cumulative' | 'critical' | 'phase';
+
 interface L1Baseline {
   bigFive: {
     openness: Unit;
@@ -157,10 +163,12 @@ interface L1Baseline {
     agreeableness: Unit;
     neuroticism: Unit;
   };
+  innate?: BigFive;            // 出生锚点：抽定后不再改写，五维只在锚点 ±drift_cap 内漂移
   temperament: 'slow_warmup' | 'eager' | 'steady' | 'guarded';
   moodBaseline: PadState;
   noveltySeeking: Unit;
   plasticityBase: Unit;        // 越小越难改变
+  plasticity?: Unit;           // 当前可塑性：随经历衰减，极端后减半
   updatedAt: ISOTime;
 }
 
@@ -171,7 +179,38 @@ interface L2Relationship {
   trustBaseline: Unit;
   relationshipStage: 'stranger' | 'acquaintance' | 'familiar' | 'close' | 'dependent';
   relationshipDepth: Unit;
+  attachmentType?: AttachmentType; // 由焦虑/回避两维推导；混乱型只能靠"靠近—伤害"循环演化
   updatedAt: ISOTime;
+}
+
+/** 自我叙事三轴：不是结论标签，只作为后续事件的解读滤镜 */
+interface SelfNarrative {
+  worldSafe: Unit;      // 世界是善意的还是危险的
+  othersReliable: Unit; // 亲近的人会不会离开
+  selfWorth: Unit;      // 我值不值得被爱
+  lockedAxes: string[]; // 曾经跨过锁定阈值的轴（只记事实，不对外当标签）
+  updatedAt: ISOTime;
+}
+
+/** 一条人格证据：面板只展示事实，不下"你现在是 X 型"的结论 */
+interface PersonalityEvidence {
+  id: string;
+  at: ISOTime;
+  eventId: string;
+  layer: 'L1' | 'L2' | 'L3';
+  dimension: string;
+  delta: number;
+  impactKind: ImpactKind;
+  impact: number;
+  quote: string;        // 当时的原话片段，供用户自己判断
+}
+
+/** 善恶观：独立于八维的价值取向，只描述倾向，不做道德评判 */
+interface MoralOutlook {
+  altruism: Unit;       // 0 偏自保/功利，1 偏利他/共情
+  principle: Unit;      // 0 灵活变通，1 守原则
+  stance: string;       // 一句话立场
+  redLines: string[];   // 红线：任何情况下都不做
 }
 
 interface CopingStrategy {
@@ -185,6 +224,9 @@ interface L3Cognition {
   biasWeights: Record<string, Unit>;   // 例如 { "overgeneralization": 0.4 }
   defenseMaturity: Unit;               // 0 幼稚 → 1 成熟
   copingStrategies: CopingStrategy[];
+  moral: MoralOutlook;
+  narrative?: SelfNarrative;           // 旧存档缺省时按中性值补齐
+  evidence?: PersonalityEvidence[];    // 证据链，最多保留最近若干条
   updatedAt: ISOTime;
 }
 
@@ -204,8 +246,12 @@ interface L4Contextual {
 
 **约束**
 
-- L1 单次写回：任一大五维度 `Δ ≤ 0.02`；`plasticityBase` 越低，允许 Δ 越小。
+- L1 有两条写回路径（v0.5）：
+  1. **日常微调** `evolvePersona`：单次任一大五维度 `Δ ≤ evolution.l1_max_delta_per_write`（默认 0.02），且距上次写入至少 `min_turns_between_writes`（默认 20 轮）。
+  2. **事件冲击** `applyPersonalitySignal`：累积/关键事件按 `critical_step`（0.12）/ `cumulative_step`（0.02）× 冲击度 × 可塑性 × 通道权重 × 修复/伤害系数推进。单次可超过 0.02，但任一大五维度必须落在出生锚点 `innate ± personality.drift_cap`（默认 ±0.6）内；日常闲聊不写人格。
 - L2 关系阶段只能逐级推进，不可跳级；回退需 evolution 日志说明原因。
+- 依恋底色出生只抽安全/焦虑/回避三种；混乱型不可出生，必须由至少两轮关键事件交替（靠近 → 伤害 → 靠近）且焦虑/回避两维同时偏高才会出现。
+- 自我叙事三轴的锁定值只记录事实（`lockedAxes`），面板不得把依恋类型或叙事轴当作诊断/人格标签输出。
 - L4 `subPersonas[].weight` 每次更新后归一化，禁止全零。
 
 ### 4.3 运行时状态 L5
@@ -431,6 +477,53 @@ interface EvolutionLogEntry {
 
 - 安全字段只允许"维度强度 / 持续时间 / 功能损害 / 触发条件"四类，禁止任何诊断名词。
 - 演化日志只追加，不允许修改历史条目。
+
+### 4.8 性格演化（v0.5）
+
+代码落点：`src/runtime/personality.ts`；接入点在 `store.ts`（新建角色）与 `index.ts#afterResponse`。`personality.ts` 注释里引用的「性格多样性演化」即本节。
+
+**出生抽样**
+
+- `createInitialL1(characterId, seed, initial)`：五维在 `personality.initial.ranges` 的有界区间内抽样，同角色同种子可复现；结果同时写入 `innate` 作为终身锚点。
+- `createInitialL2`：按 `attachment_priors`（secure 0.7 / anxious 0.18 / avoidant 0.12）抽依恋底色，再映射到焦虑/回避两维并加 ±0.04 抖动；混乱型不在出生分布内。
+- 旧存档缺 `innate` 时以当前 `bigFive` 兜底（等于从此刻起不再有可漂移的起源）；缺 `attachmentType` 时按当前两维推导；`narrative` / `moral` / `evidence` 按默认值补齐，不追认历史。
+
+**冲击分级**
+
+`scoreImpact(text, l5)` 以情绪强度打底，关键/生活/成就/修复标记加权；没有关键标记时上限 0.5，日常聊天落在 `routine`，不写 L1–L3。
+
+```text
+routine < cumulative_threshold(0.3) ≤ cumulative < critical_threshold(0.6) ≤ critical
+```
+
+**通道与方向**
+
+- 关系（分手/背叛/离开等）→ 负向，主要推动神经质/外向/宜人。
+- 生活转折（搬家/换工作/毕业/生病等）→ 开放性与尽责性。
+- 成就挫败（升职/录取/失败/失业等）→ 尽责性，其次外向与神经质。
+- 修复（道歉/保证/回来等）→ 正向，但按依恋类型打折。
+- 极性词典无命中时按通道语义兜底，避免把"分手"当成好消息。
+
+**漂移与可塑性**
+
+- 每次推进后夹在 `innate ± personality.drift_cap`（默认 ±0.6）内。
+- `plasticity` 随极端状态减半；`critical_step`（0.12）/ `cumulative_step`（0.02）都会乘冲击度与可塑性。
+- 同向经历累计到 `same_direction_bonus_after` 的整数倍时额外推一把，避免永久加成。
+
+**依恋与修复**
+
+- `personality.repair`：secure 1.0 / anxious 0.34 / avoidant 0.25 / disorganized 0.2；伤害侧按 `2 - repair` 放大，因此焦虑型一次失约回退更多，回避型被逼问倒退更快。
+- 关键事件交替累计 `personality_cycles`，达到 2 轮且焦虑/回避两维同时偏高才允许 `disorganized`。
+
+**叙事与证据链**
+
+- 三轴 `worldSafe` / `othersReliable` / `selfWorth` 随事件方向移动；越过 0.25 或 0.8 时记入 `lockedAxes`（只记事实）。
+- 每次 L1/L2/L3 变化写一条 `PersonalityEvidence`（含原话片段、冲击等级与数值），上限 `personality.evidence_cap`（默认 200）。
+- 面板只展示事实与数值，不输出"你是 X 型"的结论。
+
+**验证**
+
+`tests/personality.test.ts` 9 项：出生可复现、依恋不可出生混乱型、冲击分级、日常不写人格、通道分化、`drift_cap` 约束、修复按依恋打折、面板事实化、混乱型只能演化。测试总数 103 → **112**。
 
 ---
 
@@ -980,19 +1073,49 @@ decay:
   archive_threshold: 0.15
   archive_idle_days: 90
 
-# 情绪回落（§14.7）：闲置越久，L5 越靠近 L1 心情基线；连续对话时几乎不生效
+# 情绪回落（§14.7）：闲置越久，L5 越靠近基线；连续对话时几乎不生效
 emotion_relax:
   enabled: true
   rate_per_hour: 0.06          # 每小时向基线回归的比例
   idle_hours: 0.5              # 闲置不足该时长不回落
+  stress_baseline: 0.2
+  fatigue_baseline: 0.15
+  safety_baseline: 0.7
 
 evolution:
-  l1_max_delta_per_write: 0.02
+  l1_max_delta_per_write: 0.02 # 仅约束 evolvePersona 的日常微调路径
   min_turns_between_writes: 20
   log_retention_days: 365
 
-desktop:
+# 性格演化（§4.8 / §14.8）：日常闲聊不动人格，只有累积/关键事件才推动
+personality:
   enabled: true
+  drift_cap: 0.6                # 五维相对出生锚点的最大漂移量（±）
+  critical_threshold: 0.6       # 冲击度 ≥ 此值算关键事件
+  cumulative_threshold: 0.3     # 冲击度 ≥ 此值算累积经历
+  critical_step: 0.12           # 关键事件的单步基础推进
+  cumulative_step: 0.02
+  same_direction_bonus_after: 3 # 同向经历每攒够几次，额外推一把
+  repair:                       # 修复效率乘数（按依恋底色）；伤害侧按 2 - 该值放大
+    secure: 1.0
+    anxious: 0.34
+    avoidant: 0.25
+    disorganized: 0.2
+  initial:                      # 出生抽样：区间有界，混乱型不可出生
+    ranges:
+      openness: [0.45, 0.75]
+      conscientiousness: [0.4, 0.7]
+      extraversion: [0.3, 0.7]
+      agreeableness: [0.45, 0.8]
+      neuroticism: [0.25, 0.65]
+    attachment_priors:
+      secure: 0.7
+      anxious: 0.18
+      avoidant: 0.12
+  evidence_cap: 200             # 证据链保留条数（面板只给事实，不给类型标签）
+
+desktop:
+  enabled: false               # P9 尚未实现；true 只会在启动时告警
   bridge_url: http://127.0.0.1:47614
 
 # 认知滤网（见 §8.5）：写入门控 / 习惯化 / 屏蔽 / 忘却
@@ -1136,9 +1259,9 @@ vpet:
 
 **P0 退出条件**必须同时满足：G1 通过 + 无诊断标签 + 空库不编造往事。
 
-### 14.1 实现核对（截至 2026-11-04）
+### 14.1 实现核对（截至 2026-11-06 v0.5）
 
-核对基准：`src/` 当前构建（**103 项测试 + 18 项自检全绿**，2026-11-05 移除语音 + 认知滤网 + 情感闭环修复后）+ VPet MOD 实测 + Android ADB / 电脑桌面本地模拟。
+核对基准：`src/` 当前构建（**112 项测试 + 18 项自检全绿**，2026-11-06 性格多样性演化后）+ VPet MOD 实测 + Android ADB / 电脑桌面本地模拟。
 
 | 项 | 设计表述 | 实现现状 | 处置 |
 | --- | --- | --- | --- |
@@ -1163,6 +1286,7 @@ vpet:
 | 语义检索 | 混合检索含语义分 | 语义分 = max(FTS5 trigram 子串命中, Dice 字面重合)，无向量；2 字以下查询低于 trigram 下限，退回 Dice（对应 R-01 的 embedding 仍待评） | 已落地 FTS5；BM25/embedding 列为后续 |
 | 可观测性 | 运行/反射日志 + 4 指标 | `logs/run`、`logs/reflex`、`logs/metrics` 按角色落盘；每轮与每次反射命中各写一行 JSONL，超过 8MB 轮转为 `.1` 备份；指标保留 200 轮窗口并重启续算，可经 `GET /star-map/metrics` 读取；`degradeRate` 只统计检索降级 | 已完成（测试覆盖 + 端点实测） |
 | 人格分层写回 | §4.2 要求 L1–L4 均可写回 | `tick` 中的 `evolvePersona`：L2 关系深度向与 self 的亲密度平滑靠拢（阶段逐级推进、回退需低于阈值 0.1）；L3 依近 7 天情绪调防御成熟度并归一化偏差/应对权重；L4 子人格权重归一化；每天最多一次，每次变更写 evolution | 已完成（测试覆盖） |
+| 性格冲击路径 | v0.4 未设计（v0.5 补） | `after_response` 中的 `applyPersonalitySignal`：按冲击分级、通道、依恋修复系数推进 L1/L2/L3，写入自我叙事与人格证据链；受 `innate ± drift_cap` 约束 | 已完成（§4.8 / §14.8，9 项测试） |
 | after_response 幂等 | §6.3 要求按轮去重 | 插件内以 `(sessionId, turnId)` 去重（上限 512），重复调用返回空结果，不重复写事件/技能/演化 | 已完成（测试覆盖） |
 | 事件抽取 | （原文未说明方式） | 标题截断 + 标签词典的启发式抽取，非模型抽取；摘要层压缩为 80/40 字，全文层存完整问答 | 文档已补注 |
 
@@ -1309,7 +1433,7 @@ vpet:
 | 9 | `importance` 只算不用 | 改成调衰减指数 `factor^(1-importance)`：重要的事掉得慢，但仍是单调衰减、迟早能归档 | 热点事件不会被永久保活（设地板的方案已被单测否定） |
 | 10 | 降级不可见：FTS 异常被静默吞掉、超预算只进 JSONL、L1 降级不裁剪联想 | `store.lastFtsError` 计入 `degraded` 并 warn；新增 `overBudgetRate` 指标与面板行；L1 起联想砍半、L2 起整块不注入 | 指标口可以从面板与 `metrics()` 读到 |
 
-测试 97 → **103 项**（新增 `tests/emotion.test.ts` 6 项：极性/强度、连续负面推进、回落生效、闲置不动、出边上限、归档摘链）。
+测试 97 → **103 项**（新增 `tests/emotion.test.ts` 6 项：极性/强度、连续负面推进、回落生效、闲置不动、出边上限、归档摘链；v0.5 再增至 112，见 §14.8）。
 
 存量治理已在真实库执行：补显著性 189 条、归档 2 条、清理 656 条事件的悬空链接、修剪 1 条超级节点出度。
 
@@ -1323,6 +1447,22 @@ vpet:
 | 情绪极性 | 活跃 64 条 `avg abs(pleasure) = 0.204`（修复前 0.11），但**负值 0 条**、强度 <0.2 仍占 53 条 | 量程确实拉开了，真实语料里还没有够强的负面表达；单字词降权 + 强度系数是否足够，要等下一批真实对话 |
 | L1–L4 演化 | L1 只有 2026-11-04 一次微调；L3 `biasWeights` 仍为空；L4 `updatedAt` 仍为 `1970-01-01` | L4 的"归一化"在权重本来相等时不会产生变化，属预期；L3 偏差权重缺写入路径（见 §16 开放项） |
 | 技能 / 资产 / 反射 | 真实库 0 张技能卡、0 个资产包，反射规则 3 条但命中 0 次 | 技能沉淀要求单轮 ≥2 个工具调用，真实对话多为纯聊天；反射规则的 `keyword` 与真实话术未对齐 |
+
+### 14.8 性格多样性演化轮次（2026-11-06 v0.5）
+
+| # | 内容 | 落点 | 验证 |
+| --- | --- | --- | --- |
+| 1 | 出生抽样：五维区间抽样、同角色同种子可复现，并写入 `innate` 锚点 | `createInitialL1` / `createInitialL2` / `store.loadPersona` | `personality.test.ts` 出生可复现 + 区间有界 |
+| 2 | 依恋底色按 prior 抽取；混乱型不可出生 | `createInitialL2` / `deriveAttachment` | 1000 次抽样无 `disorganized` |
+| 3 | 冲击分级：日常闲聊不动人格 | `scoreImpact` / `applyPersonalitySignal` | `routine` 事件不产生 L1/L2/L3 变更 |
+| 4 | 通道分化：关系 / 生活转折 / 成就挫败 / 修复推动不同维度 | `classifyChannel` / `applyPersonalitySignal` | 四类文本分别命中预期维度 |
+| 5 | 漂移上限与可塑性：任一大五维度不超 `innate ± 0.6` | `applyPersonalitySignal` | 极端事件后仍满足 ±0.6 |
+| 6 | 修复不对称：按依恋类型打折，伤害侧放大 | `settings.repair` / `repairFactor` | 焦虑/回避的修复幅度显著低于安全型 |
+| 7 | 自我叙事三轴与锁定轴 | `applyPersonalitySignal` 内 `lock` | 锁定轴只记录事实，不改写历史 |
+| 8 | 人格证据链：上限 200，面板只给事实 | `makeEvidence` / `panels.ts` | 面板不输出"你是 X 型"标签 |
+| 9 | 混乱型只能演化：两轮关键事件交替 + 两维同时偏高 | `applyPersonalitySignal` 的 `personality_cycles` 分支 | 单轮关键事件不会直接变成混乱型 |
+
+验证基线：`tests/personality.test.ts` **9 项**；`npm test` 从 103 增至 **112 项全绿**，`tsc --noEmit` 无错，`check:link` 仍 PASS 18。
 
 ---
 
@@ -1338,32 +1478,35 @@ vpet:
 | R-06 | 兼容 | 外部插件工具名变更 | 技能失效 | 加载时校验 `required_tools`，缺失降级 |
 | R-07 | 隐私 | 跨工作区共享记忆 | 数据外泄风险 | 角色级显式授权 + 记忆可见性标记 ⚑ |
 | R-08 | 质量 | 情绪识别仍是 22 词表（正负各 11 条）+ 命中数差，无否定/程度/对象处理 | 真实语料负面极性恒为 0，情绪臂区分度不足 | 扩词表或改模型打标（评估文档 §5 第 8 条） |
-| R-09 | 验证 | 2026-11-05 的修复只在单测与库副本上验证，真实库尚未产生新对话 | 效果无法用真实数据确认 | 下一批真实对话后复跑 `emotion_history` 行数与极性分布 |
+| R-09 | 验证 | 2026-11-05 的修复只在单测与库副本上验证；2026-11-06 真实库已重置（events 0 条、emotion_history 0 行） | 效果无法用真实数据确认 | 下一批真实对话后复跑 `emotion_history` 行数与极性分布 |
+| R-10 | 设计口径 | v0.5 性格冲击路径单次 Δ 可超过旧 0.02 约束，且不经过 20 轮间隔 | 新旧约束并存，读者易误判 | 已在 §4.2 明确双路径；若要求绝对 0.02，需要改 `applyPersonalitySignal` |
 
 ⚑ **待拍板决策点**
 
-| 编号 | 决策 | 选项 | 本文建议 | 落地状态（2026-11-05 复核） |
+| 编号 | 决策 | 选项 | 本文建议 | 落地状态（2026-11-06 复核） |
 | --- | --- | --- | --- | --- |
 | D-01 | 存储作用域 | character / session / workspace | character | 已落地：`Store` 按 `characterId` 缓存，共用同一 `data_root`，跨会话/跨工作区可读（测试覆盖）；v0.3 起 `single_writer: true` 真正生效——写锁 + 原子写 + 技能读-改-写（见 §5.3），并发累计不再丢计数 |
 | D-02 | 存储后端 | SQLite / JSONL | SQLite（FTS5） | 已落地：事件/回看历史/meta 走 SQLite；`events_fts`（FTS5 外部内容表 + 增删改触发器，trigram 分词）参与检索打分，Dice 作为短查询兜底；全文另存 JSONL 单文件 |
 | D-03 | 打分权重与是否引入 embedding | 固定权重 / 回归调参 / 加向量 | 先固定权重 | 已落地：`retrieval.score_weights` 固定，语义分 = max(FTS5 trigram 命中, Dice)，无 embedding |
 | D-04 | 星图形态 | 静态产物 / 在线服务 | 在线只读服务（`/star-map/` + 侧边栏面板） | 已落地：`/star-map` 页面 + `/star-map/api` 实时数据 + `webServer` 只读挂载 |
 | D-05 | 注入块格式是否对外可配置 | 固定模板 / 模板可配 | 固定，先稳定再开放 | 已落地：`buildBlocks` 硬编码模板与配额，无对外配置项 |
+| D-06 | L1 写回约束 | 双路径（日常 0.02 / 事件冲击受 `drift_cap` 约束）/ 全部收口到 0.02 | 双路径 | 已按双路径实现（§4.2 / §4.8）；若评审要求绝对 0.02，需改 `applyPersonalitySignal` |
 
 ---
 
 ## 16. 评审清单
 
 - [x] v0.3 加固项已核对（§14.2 八项 + §14.3 桌宠弱耦合 + 移除语音，测试 85 项全绿）
-- [x] 认知滤网已落地并回填存量（§8.5 / §14.5；真实库现 662 条：活跃 64、归档 598，含后续忘却 126）
+- [x] 认知滤网已落地并回填存量（§8.5 / §14.5；2026-11-05 时真实库 662 条：活跃 64、归档 598，含后续忘却 126；2026-11-06 库已重置，待复测）
 - [x] 星图观感优化已落地（§14.6，悬停概要 / 鼠标锚点缩放 / 3D 透视，三项交互实测通过）
-- [x] 记忆与情感闭环已修复（§14.7，测试 103 项全绿：情绪量程、回忆重构、情感回落、L2 锚点、超级节点、存量显著性、同题口径）
+- [x] 记忆与情感闭环已修复（§14.7，当时测试 103 项全绿：情绪量程、回忆重构、情感回落、L2 锚点、超级节点、存量显著性、同题口径）
+- [x] 性格多样性演化已落地（§4.8 / §14.8，`tests/personality.test.ts` 9 项；当前 `npm test` 112 项全绿）
 - [x] 适配性 / 联动性自检 18 项全绿（§14.4，`npm run check:link`：PASS 18 / WARN 0 / FAIL 0，需先 `npm run build`）
-- [ ] 真实数据复测：`emotion_history` 行数与负面极性占比（§14.7 表格，需新对话）
-- [ ] L3 认知偏差权重 / 应对策略的写入路径（当前只有 `defenseMaturity` 会动）
+- [ ] 真实数据复测：`emotion_history` 行数与负面极性占比（§14.7 表格，需新对话；当前库已重置）
+- [ ] L3 认知偏差权重 / 应对策略的写入路径（当前只有 `defenseMaturity` 会变，`biasWeights` / `copingStrategies` 仅被归一化，无新增条目）
 - [ ] G1–G5 验收标准可测，且不依赖人工主观判断的部分已明确
-- [x] D-01 ~ D-05 已拍板（落地状态见 §15 决策表，五项均已落地）
-- [ ] L1 单次写回幅度与最小间隔已确认（默认 Δ≤0.02 / 20 轮）
+- [x] D-01 ~ D-06 已拍板（落地状态见 §15 决策表）
+- [x] L1 写回约束已明确（§4.2 双路径：日常微调 Δ≤0.02 / 20 轮；事件冲击受 `innate ± drift_cap` 约束，D-06）
 - [ ] 检索打分权重已确认或标记为可调
 - [ ] 预算分配表已确认（persona 300 / event 1400 / total 3000）
 - [ ] 安全三档阈值与滞回带已确认
