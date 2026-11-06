@@ -1,6 +1,6 @@
 {
   "name": "dsh-daughter",
-  "version": "0.6.2",
+  "version": "0.6.3",
   "description": "人格—记忆—状态—技能—反射 五维陪伴插件 / Persona, long-term memory, state, skills and reflexes for DeepSeek Harness",
   "type": "module",
   "license": "MIT",
@@ -25,7 +25,7 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
-    "dsh-daughter-token": "./bin/connector-token.mjs"
+    "dsh-daughter-token": "bin/connector-token.mjs"
   },
   "exports": {
     ".": "./index.js",
