@@ -35,6 +35,8 @@
 
 ```bash
 npm run connector:token -- --write-to "<VPet 安装目录>\mod\DshDaughter\plugin"
+# 从 npm 安装的用户：
+npx dsh-daughter-token --write-to "<VPet 安装目录>\mod\DshDaughter\plugin"
 ```
 
 也可以手动把 `brain/brainstem/connector_token` 的内容复制成 `plugin/token.txt`，或设置环境变量 `DSH_DAUGHTER_TOKEN`。令牌缺失时 MOD 仍会启动，但请求会被 401 拒绝，日志里会写明原因。
@@ -109,10 +111,14 @@ dotnet build -c Release -p:VPetDir="E:\SteamLibrary\steamapps\common\VPet"
 仓库自带一份 format 1 索引：[`market/index.json`](market/index.json)。在 DSH 里打开 **插件 → 发现 → 索引源 → 添加**，填入：
 
 ```text
-https://cdn.jsdelivr.net/gh/han0han0le0ni/dsh-daughter@main/market/index.json
+https://fastly.jsdelivr.net/gh/han0han0le0ni/dsh-daughter@main/market/index.json
 ```
 
-之后在「发现」里搜 `daughter` 安装即可。索引里固定了 commit，装到的是可复现的版本。
+（`cdn.jsdelivr.net` 同路径也可；部分网络下它会被重置，`fastly` 节点更稳。）
+
+之后在「发现」里搜 `daughter` 安装即可。索引里每个版本都钉死了 commit，装到的是可复现的版本。
+
+> 社区目录（`dsh-plugin-catalog`，也就是「发现」里默认那份）收录的是 npm 上的包，本插件发布到 npm 之后会被抓取；在那之前，请用上面的自带索引源。
 
 **2. 直接从 git 装**
 
@@ -125,8 +131,8 @@ dsh plugin add git+https://github.com/han0han0le0ni/dsh-daughter.git
 ```bash
 npm install
 npm run build        # tsc → dist/
-npm test             # 203 项
-npm run check:link   # 适配性 / 联动性自检，18 项
+npm test             # 211 项
+npm run check:link   # 适配性 / 联动性自检，19 项
 ```
 
 > 仓库里提交了 `dist/`：市场与 git 安装没有构建步骤，必须带一份可直接加载的产物。改了 `src/` 记得 `npm run build` 再提交（`prepare` 脚本也会兜一层）。
@@ -265,11 +271,32 @@ docs/               设计文档、实现核对、评估、检测报告
 
 ## 当前状态
 
-P0–P8 已落地并核对（当前 `npm test` **203 项全绿**，`check:link` PASS 18）；P9 外部连接 4/7（VPet 桌宠 / Android / 桌面已通，抖音走只读共享记忆拉取，QQ、Minecraft、单机待适配器）。已知短板与后续优先级见上面两份文档。
+P0–P8 已落地并核对（当前 `npm test` **211 项全绿**，`check:link` PASS 19）；P9 外部连接 4/7（VPet 桌宠 / Android / 桌面已通，抖音走只读共享记忆拉取，QQ、Minecraft、单机待适配器）。已知短板与后续优先级见上面两份文档。
+
+## 发布（维护者）
+
+**两个渠道必须一起更新**：只 push GitHub 不发布 npm，插件市场「发现」里装到的仍是旧版。
+
+```bash
+# 1. 版本 + 构建 + 校验
+npm version <ver> --no-git-tag-version
+npm run build && npm test && npm run check:link
+
+# 2. 推送 GitHub，并把市场索引钉到本次发布提交
+git add -A && git commit -m "feat(...): ..."
+git push origin main
+# 编辑 market/index.json：新增 { version, publishTimestamp, source.commit = 发布提交号 }
+git add market/index.json && git commit -m "chore(market): 索引锁定到 <ver>（<sha>）" && git push origin main
+
+# 3. 发布 npm（社区目录靠它抓取）
+npm publish
+```
+
+发布后可用 `npm view dsh-daughter version` 与 `npx dsh-daughter-token --json` 验证；jsDelivr 对 `@main` 有缓存，索引更新后可请求 `https://purge.jsdelivr.net/gh/han0han0le0ni/dsh-daughter@main/market/index.json` 刷新。
 
 ## 隐私
 
-`brain/`、`logs/`、`archive/`、`star_map/`、`docs/screenshots/`、`dist/` 与 C# 的 `bin/obj` 均排除在版本库之外：前四者包含真实对话记忆、人格状态与界面截图，只在本地生成。
+`brain/`、`logs/`、`archive/`、`star_map/`、`docs/screenshots/` 与 C# 的 `bin/obj` 均排除在版本库之外：前四者包含真实对话记忆、人格状态与界面截图，只在本地生成。`dist/` 例外——**故意提交**，因为市场与 git 安装没有构建步骤。
 
 ## License
 
