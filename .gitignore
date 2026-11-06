@@ -21,6 +21,9 @@ docs/screenshots/
 # 连接器令牌：本机秘密，任何时候都不入库
 connectors/**/token.txt
 
+# npm pack 产物
+*.tgz
+
 # 杂项
 *.log
 .DS_Store
