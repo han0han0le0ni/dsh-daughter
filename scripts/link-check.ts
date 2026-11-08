@@ -9,6 +9,7 @@
  *
  * 输出 PASS / WARN / FAIL，有 FAIL 时以非 0 退出。
  */
+import { spawn } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -243,6 +244,84 @@ async function main(): Promise<void> {
     });
     if (browser.status !== 403) throw new Error(`浏览器来源返回 ${browser.status}，应为 403`);
     return '匿名 401 / 错误令牌 401 / 浏览器来源 403';
+  });
+
+  // 写入端比读端更要紧：/vpet/ingest 能往记忆里落任意文本，/vpet/control 能驱动桌宠动作
+  await check('写入端点同样要求令牌（ingest / control）', async () => {
+    const anonWrite = await json('/vpet/ingest', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'anonymous write' }),
+    });
+    if (anonWrite.status !== 401) throw new Error(`无令牌写入返回 ${anonWrite.status}，应为 401`);
+    const browserWrite = await json('/vpet/ingest', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: 'http://evil.example', 'sec-fetch-mode': 'cors' },
+      body: JSON.stringify({ text: 'browser write' }),
+    });
+    if (browserWrite.status !== 403) throw new Error(`浏览器来源写入返回 ${browserWrite.status}，应为 403`);
+    const control = await json('/vpet/control', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'say', text: 'x' }),
+    });
+    if (control.status !== 401) throw new Error(`无令牌 control 返回 ${control.status}，应为 401`);
+    return 'ingest 匿名 401 / 浏览器 403 / control 匿名 401';
+  });
+
+  // 桌面桥给的是屏幕画面与键鼠注入：默认不注册工具、桥自身拿不到令牌就拒绝启动
+  await check('桌面连接器默认关闭，桥无令牌即拒（/screenshot · /input）', async () => {
+    const dir = join(root, 'default-config');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'config.yaml'), 'version: 1\n', 'utf8');
+    if (loadConfig(dir, silentLogger).desktop.enabled !== false) {
+      throw new Error('desktop.enabled 出厂应为 false');
+    }
+
+    const desktopPort = 47915;
+    const bridge = spawn(
+      process.execPath,
+      [join(process.cwd(), 'connectors', 'desktop', 'bridge.mjs'), '--port', String(desktopPort), '--token', 'a'.repeat(48)],
+      { stdio: 'ignore' },
+    );
+    const base = `http://127.0.0.1:${desktopPort}`;
+    const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+    try {
+      let health: any = null;
+      for (let i = 0; i < 24; i += 1) {
+        await sleep(250);
+        try {
+          const response = await fetch(`${base}/health`);
+          if (response.ok) {
+            health = await response.json();
+            break;
+          }
+        } catch {
+          // 桥还没起来，继续等
+        }
+      }
+      if (!health) throw new Error('桌面桥未在 6 秒内就绪');
+      if (health.auth !== 'token') throw new Error('/health 未声明需要令牌');
+      for (const leaked of ['windows', 'ffmpeg', 'fps', 'streaming']) {
+        if (health[leaked] !== undefined) throw new Error(`/health 泄露了 ${leaked}`);
+      }
+
+      const shot = await fetch(`${base}/screenshot`);
+      if (shot.status !== 401) throw new Error(`无令牌截图返回 ${shot.status}，应为 401`);
+      const input = await fetch(`${base}/input`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ actions: [] }),
+      });
+      if (input.status !== 401) throw new Error(`无令牌输入返回 ${input.status}，应为 401`);
+      const browserShot = await fetch(`${base}/screenshot`, { headers: { origin: 'http://evil.example' } });
+      if (browserShot.status !== 403) throw new Error(`浏览器来源截图返回 ${browserShot.status}，应为 403`);
+      const wrongToken = await fetch(`${base}/frames`, { headers: { 'x-dsh-token': 'f'.repeat(48) } });
+      if (wrongToken.status !== 401) throw new Error(`错误令牌返回 ${wrongToken.status}，应为 401`);
+      return '默认关闭 / health 不泄露 / screenshot 401 / input 401 / 浏览器 403 / 错令牌 401';
+    } finally {
+      bridge.kill();
+    }
   });
 
   await check('用户消息 → 桌宠 thinking 事件', async () => {
