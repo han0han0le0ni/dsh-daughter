@@ -301,6 +301,21 @@ npm publish
 
 发布后可用 `npm view dsh-daughter version` 与 `npx dsh-daughter-token --json` 验证；jsDelivr 对 `@main` 有缓存，索引更新后可请求 `https://purge.jsdelivr.net/gh/han0han0le0ni/dsh-daughter@main/market/index.json` 刷新。
 
+## 安全（连接器令牌）
+
+两个本机 HTTP 端点都要令牌：**环回地址不是权限边界**，本机任意网页都能向 `127.0.0.1` 发请求。
+
+| 端点 | 默认端口 | 一旦放开的后果 | 无令牌 | 浏览器来源 |
+|---|---|---|---|---|
+| 插件桥 | 47612 | `/vpet/ingest` 往记忆写任意文本，`/vpet/events` 把对话读走，`/vpet/control` 驱动桌宠 | 无令牌可用时 503 全拒；令牌不匹配 401 | 403 |
+| 桌面连接器 | 47614 | `/screenshot` `/frames` `/stream` 看屏幕，`/input` 注入键鼠 | 401；桥自身拿不到令牌时**拒绝启动** | 403 |
+
+- 令牌：`brain/brainstem/connector_token`，32 字节随机、权限 0600；多机/容器可用 `security.connector_token` 固定同一份。
+- `/health` 是唯一免令牌端点，且只回 `{"ok":true,"auth":"token"}` —— 不吐队列长度、在线状态、窗口标题与角色信息。
+- 桌面连接器出厂 `desktop.enabled: false`：不显式改成 `true`，`desktop_observe` / `desktop_input` 根本不注册。
+- 两个桥都只绑 `127.0.0.1`，不监听对外网卡。
+- 上面这些拒绝路径都有自检：`npm run check:link` 会起一个真桥逐条打过去（21 项，含 `/vpet/ingest` 匿名 401、`/screenshot` 与 `/input` 无令牌 401、`Origin` 403、错误令牌 401）。
+
 ## 隐私
 
 `brain/`、`logs/`、`archive/`、`star_map/`、`docs/screenshots/` 与 C# 的 `bin/obj` 均排除在版本库之外：前四者包含真实对话记忆、人格状态与界面截图，只在本地生成。`dist/` 例外——**故意提交**，因为市场与 git 安装没有构建步骤。
