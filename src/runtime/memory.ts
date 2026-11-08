@@ -347,6 +347,9 @@ export function extractEvent(
     recallCount: 0,
     archived: false,
     schemaVersion: 1,
+    // 窗口只是"工位"，不是记忆分区；但"刚在别处说的话"要靠它认出来
+    sessionId: ctx.sessionId,
+    workspaceId: ctx.workspaceId,
   };
 }
 

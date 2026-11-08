@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Daughter Companion",
-    "description": "Adds persistent persona, memory, state, skills, and reflex behaviors to chat sessions."
+    "description": "Persona evolution plugin for DSH: persistent persona, memory, state, skills, and reflexes. Memory spans windows with time-awareness — do not enable in work chats, or private memories will leak into work context."
   }
 }

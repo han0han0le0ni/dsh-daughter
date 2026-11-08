@@ -1,6 +1,7 @@
 import type { InitialPersonalityInput } from './runtime/personality.js';
 import type { Logger } from './util.js';
 import type { AssetPackage, BodySignal, EvolutionLogEntry, EventRecord, L1Baseline, L2Relationship, L3Cognition, L4Contextual, L5State, PersonaBundle, ReflexRule, SafetyState, SkillCard } from './types.js';
+import type { ThreadHead } from './runtime/threading.js';
 /** 出厂人格基线：星图面板用它算“相对出厂值的偏移”，只读，不参与写回 */
 export declare const DEFAULT_L1: L1Baseline;
 export declare const DEFAULT_L2: L2Relationship;
@@ -60,6 +61,24 @@ export declare class Store {
     /** 检索候选集：按权重与时间排序的非归档事件 */
     listCandidates(includeArchived: boolean, limit: number): EventRecord[];
     listAllEvents(): EventRecord[];
+    /**
+     * "刚在别处说的话"：时间窗口内、且不来自当前窗口的非归档事件。
+     * 旧存档没有 session_id（NULL），无法判定来自哪，按"可能是别的窗口"处理——
+     * 反正在时间窗内、又在当前检索里没出现，补进来正是用户要的"跨窗口记忆"。
+     */
+    listRecentElsewhere(since: string, limit: number, sessionId: string): EventRecord[];
+    /** 同一局的全部事件（按时间正序）：用来拼这一局的前情摘要或回放 */
+    listThreadEvents(threadId: string): EventRecord[];
+    /** 进行中的局：只存头部索引（最近几轮），是"当前正在做什么"的共享寄存器 */
+    saveOpenThreads(threads: ThreadHead[]): void;
+    loadOpenThreads(): ThreadHead[];
+    /**
+     * 窗口的名字：会话 id → 「窗1」「窗2」…
+     * 按第一次出现的顺序排号并落库，所以同一窗口重启后还叫同一个名，
+     * 也不会像哈希那样给出"SX"这种看不出意思的编号。
+     */
+    saveWindowNames(names: Record<string, string>): void;
+    loadWindowNames(): Record<string, string>;
     /** 时间窗口内的非归档事件：动机的情绪记忆只用近段事件，避免全表扫描 */
     listRecentEvents(since: string, limit?: number): EventRecord[];
     updateEventMutable(id: string, patch: Partial<Pick<EventRecord, 'weight' | 'lastRecalledAt' | 'recallCount' | 'archived' | 'links' | 'salience' | 'mergedCount'>>): void;
@@ -109,6 +128,17 @@ export declare class Store {
     loadL5(sessionId: string): L5State | null;
     saveL5(state: L5State): void;
     listL5Sessions(): string[];
+    /**
+     * 记下"这段会话结束时的此刻"，供下一次同范围的新会话接力。
+     * 存在 meta 表而不是 l5_state/ 目录：那里每多一个文件都会被 listL5Sessions 当成一个会话，
+     * 星图面板会凭空多出一个"会话"。按范围分键，character 一份、每个 workspace 各一份。
+     */
+    saveL5Carry(scope: string, state: L5State): void;
+    /** 最近一次落盘的会话快照：给"升级前没有接力快照"的旧存档兜底，让升级当次就能接力 */
+    latestL5(): L5State | null;
+    loadL5Carry(scope: string): L5State | null;
+    /** 只保留最近若干范围的快照：长期跑下去 workspace 会换很多个，旧的留着只是噪声 */
+    private pruneL5Carry;
     /** 外部生理信号（桌宠体力/心情）；没有文件视为没有桌宠，返回 null */
     loadBodySignal(): BodySignal | null;
     saveBodySignal(signal: BodySignal): void;
@@ -169,7 +199,7 @@ export declare class Store {
      * L2 亲密度的锚点跟着失真。把已经写错的这批改回 ['self']（幂等）。
      */
     private migrateParticipants;
-    /** 老库补列：认知滤网引入的 salience / merged_count，缺列时原地 ALTER */
+    /** 老库补列：认知滤网（salience/merged_count）与"窗口只是工位"（session/workspace），缺列时原地 ALTER */
     private migrateFilterColumns;
     /**
      * FTS5 全文索引（D-02）：外部内容表 + 触发器保持与 events 同步。

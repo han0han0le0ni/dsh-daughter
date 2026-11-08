@@ -1,5 +1,6 @@
 import type { AssetKind, DaughterConfig, PersonaBundle, SkillCard } from '../types.js';
 import type { Store } from '../store.js';
+import { type WeightedLabel } from './weights.js';
 export declare function runTick(store: Store, config: DaughterConfig, now: string): {
     decayed: number;
     archived: number;
@@ -68,9 +69,12 @@ export declare function buildPersonProfiles(store: Store, now: string): PersonPr
 export interface ThingProfile {
     label: string;
     eventCount: number;
-    /** -1..1：负值偏不喜欢，正值偏喜欢 */
+    /** -1..1，两位小数：负值偏不喜欢，正值偏喜欢 */
     preference: number;
-    mood: '喜欢' | '不喜欢' | '中性';
+    /** 主档：分布里权重最高的一档（很不喜欢 / 不喜欢 / 中性 / 喜欢 / 很喜欢） */
+    mood: string;
+    /** 完整分布，两位小数、总和 1.00：一件事可以同时"喜欢 0.62、中性 0.38" */
+    moods: WeightedLabel[];
 }
 /** 事物喜好：同一主题在事件里的情绪加权平均，14 天半衰期 */
 export declare function buildThingProfiles(store: Store, now: string): ThingProfile[];

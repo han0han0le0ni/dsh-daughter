@@ -211,6 +211,11 @@ export interface EventRecord {
 
   source: 'chat' | 'qq' | 'douyin_dm' | 'douyin_content' | 'minecraft' | 'game' | 'android' | 'system';
   createdAt: ISOTime;
+  /** 说这句话时所在的对话窗口 / 工作区。窗口只是"工位"，不是记忆分区，但"刚在别处说的话"需要能被认出来 */
+  sessionId?: string;
+  workspaceId?: string;
+  /** 属于哪一"局"（进行中的活动）：同一局跨窗口、跨轮的几条事件共用一个 id */
+  threadId?: string;
   lastRecalledAt?: ISOTime;
   recallCount: number;
   /** 认知滤网给出的显著性（0..1）；旧数据缺省视为未知，不参与忘却 */
@@ -353,16 +358,25 @@ export interface SafetyVerdict {
 }
 
 export interface PromptBlock {
-  kind: 'persona' | 'state_hint' | 'event_digest' | 'skill_digest' | 'association' | 'constraint';
+  kind: 'persona' | 'state_hint' | 'event_digest' | 'cross_window' | 'thread' | 'skill_digest' | 'association' | 'constraint';
   text: string;
   tokens: number;
   priority: number;
 }
 
+/**
+ * 窗口名字的来源：会话 id → 能念出来的短名。
+ * 生产环境传落库的「窗1」「窗2」（按第一次出现的顺序编号），
+ * 纯函数的那套（`windowName`）只给缺省与测试用。
+ */
+export type WindowNamer = (sessionId?: string | null) => string;
+
 export interface RetrievalHit {
   event: EventRecord;
   score: number;
   reason: string;
+  /** 这句说在哪个窗口（见 `windowName`）：非当前窗口的命中要标"别处"，否则两边的话分不清 */
+  window?: string;
 }
 
 export interface AssociationHit {
@@ -732,6 +746,44 @@ export interface DaughterConfig {
     /** 字面检索一条都没命中时，用最近事件当种子跑一跳联想（"想不起对应的事，就从近的事顺下去"） */
     fallback_when_no_match: boolean;
   };
+  /**
+   * 窗口只是"工位"，不是记忆分区：跨窗口的时间感与"刚在别处说的话"都由这里控制。
+   */
+  continuity: {
+    enabled: boolean;
+    /** 别的窗口里多久以内的话算"刚刚"，会补进当前窗口（分钟） */
+    cross_window_minutes: number;
+    /** 每轮最多补几条"别处刚说的话" */
+    cross_window_max: number;
+  };
+  /**
+   * "局"（进行中的活动）：同一件事跨窗口、跨轮会被切成一堆事件，
+   * 这里按"时间相邻 + 话题相似"把它们归并成一个 thread，注入时给前情摘要而不是单条碎片。
+   */
+  threading: {
+    enabled: boolean;
+    /** 同一局两次发言的最大间隔（分钟），超过就算新的一局 */
+    gap_minutes: number;
+    /** 标题 Dice 相似度门槛，达到才算同一局 */
+    similarity: number;
+    /** 一局多久没动静就算结束，不再注入（分钟） */
+    activity_ttl_minutes: number;
+    /**
+     * 已结束的局在寄存器里还留多久（分钟）。
+     * 它不会再当"进行中"注入，但"昨晚那局"仍要有个落脚处——到期就彻底出寄存器，
+     * 免得越攒越多、开头三分之一全是旧账。
+     */
+    closed_retention_minutes: number;
+    /**
+     * 收尾话术：说了这些词就算这一局结了，不必等它自己凉。
+     * 只影响"这一局还开着吗"，不改变事件本身的记忆。
+     */
+    closing_phrases: string[];
+    /** 前情摘要最多带几轮 */
+    max_summary_turns: number;
+    /** 每轮最多注入几个"进行中的局" */
+    max_injected: number;
+  };
   skills: {
     max_main: number;
     max_associated: number;
@@ -763,6 +815,8 @@ export interface DaughterConfig {
       persona: number;
       state_hint: number;
       event_digest: number;
+      cross_window: number;
+      thread: number;
       skill_digest: number;
       association: number;
       constraint: number;

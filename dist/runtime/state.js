@@ -35,6 +35,43 @@ export function createInitialL5(characterId, sessionId, now, persona, overdraft)
         schemaVersion: 1,
     };
 }
+/**
+ * 跨会话接力：换对话框后不是从基线重新出生，而是把上一段的 L5 按闲置时长向基线回落。
+ *
+ * 隔五分钟基本原样（还没到 idle_hours），隔一夜明显平复但不会归零——人换房间不清空情绪，
+ * 但也不会带着上周的疲惫。是否跨会话、是否跨工作区由调用方按配置决定，这里只管衰减。
+ */
+export function carryL5(previous, sessionId, now, persona, config) {
+    const relax = config.emotion_relax;
+    const gapHours = (Date.parse(now) - Date.parse(previous.lastTickAt)) / 3_600_000;
+    const idleHours = Number.isFinite(gapHours) && gapHours > 0 ? gapHours : 0;
+    // 与 relaxL5 同一套复利：连续对话里几乎不动，隔夜才明显回落
+    const ratio = relax.enabled && relax.rate_per_hour > 0 && idleHours >= relax.idle_hours
+        ? 1 - Math.pow(1 - relax.rate_per_hour, idleHours)
+        : 0;
+    const baseline = persona.l1.moodBaseline;
+    const pull = (value, target) => Number((value + (target - value) * ratio).toFixed(4));
+    const next = {
+        ...previous,
+        sessionId,
+        emotion: {
+            pleasure: pull(previous.emotion.pleasure, baseline.pleasure),
+            arousal: pull(previous.emotion.arousal, baseline.arousal),
+            dominance: pull(previous.emotion.dominance, baseline.dominance),
+        },
+        stress: pull(previous.stress, relax.stress_baseline),
+        fatigue: pull(previous.fatigue, relax.fatigue_baseline),
+        safety: pull(previous.safety, relax.safety_baseline),
+        // 生理信号是"当时那个桌宠"的状态，跨会话不继承，等新会话自己上报
+        body: null,
+        lastTickAt: now,
+        snapshotAt: now,
+        schemaVersion: 1,
+    };
+    next.stressHighSince = next.stress >= 0.7 ? previous.stressHighSince ?? now : undefined;
+    next.safetyLowSince = next.safety <= 0.35 ? previous.safetyLowSince ?? now : undefined;
+    return next;
+}
 export function updateL5(prev, text, now, persona) {
     const polarity = sentimentPolarity(text);
     const strength = sentimentStrength(text);

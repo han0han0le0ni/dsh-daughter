@@ -239,6 +239,35 @@ export function relativeTime(from, to) {
     const months = Math.floor(days / 30);
     return months < 12 ? `${months} 个月前` : `${Math.floor(months / 12)} 年前`;
 }
+/**
+ * 绝对时间戳（本地时钟）：今天的显示 `HH:MM`，更早的显示 `MM-DD HH:MM`。
+ * 跨窗口连贯性用它：相对时间只说"多久前"，绝对时钟才能把"我跑了 → 你好"接成一条时间线。
+ */
+export function formatTimestamp(iso, now) {
+    const ms = Date.parse(iso);
+    if (!Number.isFinite(ms))
+        return '';
+    const date = new Date(ms);
+    const pad = (value) => String(value).padStart(2, '0');
+    const hhmm = `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+    const nowMs = now ? Date.parse(now) : Date.now();
+    const sameDay = Number.isFinite(nowMs) &&
+        new Date(nowMs).toDateString() === date.toDateString();
+    return sameDay ? hhmm : `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${hhmm}`;
+}
+/**
+ * 窗口的名字：同一个会话每次都叫同一个名，换个窗口就换个名。
+ *
+ * 没有名字时，注入的每行只有时间戳，"这句话是我在这边刚说的"和"是那边说的"分不开，
+ * 本窗口的话被当成别处的、自己跟自己的回声往下推。给窗口一个能念出来的短名，
+ * 贴过来时就能标清哪句是这儿、哪句是别处。
+ */
+export function windowName(sessionId) {
+    if (!sessionId)
+        return '旧窗口';
+    const code = (hashText(sessionId) % 1296).toString(36).toUpperCase().padStart(2, '0');
+    return `窗${code}`;
+}
 export function truncate(text, max) {
     if (text.length <= max)
         return text;

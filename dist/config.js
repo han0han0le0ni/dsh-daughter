@@ -33,6 +33,32 @@ export const defaultConfig = {
         hop_decay: 0.6,
         fallback_when_no_match: true,
     },
+    continuity: {
+        enabled: true,
+        cross_window_minutes: 45,
+        cross_window_max: 2,
+    },
+    threading: {
+        enabled: true,
+        gap_minutes: 45,
+        similarity: 0.25,
+        activity_ttl_minutes: 180,
+        closed_retention_minutes: 1440,
+        closing_phrases: [
+            '先这样',
+            '不玩了',
+            '不聊了',
+            '下次再说',
+            '回头再说',
+            '就到这儿',
+            '到此为止',
+            '收工',
+            '晚安',
+            '睡了',
+        ],
+        max_summary_turns: 4,
+        max_injected: 2,
+    },
     skills: {
         max_main: 1,
         max_associated: 2,
@@ -113,6 +139,8 @@ export const defaultConfig = {
             persona: 300,
             state_hint: 150,
             event_digest: 1400,
+            cross_window: 200,
+            thread: 200,
             skill_digest: 500,
             association: 300,
             constraint: 120,
@@ -256,8 +284,12 @@ function warnUnsupported(config, logger) {
             scope: config.storage.scope,
         });
     }
-    if (!config.storage.shared_across_sessions || !config.storage.shared_across_workspaces) {
-        logger.warn('dsh-daughter: 跨会话/跨工作区共享固定开启，shared_across_* 目前不生效');
+    // shared_across_* 现在真的生效了：只作用于「此刻」的 L5 接力，事件库与人格仍是角色级
+    if (!config.storage.shared_across_sessions) {
+        logger.info('dsh-daughter: shared_across_sessions=false，每个会话从基线重新出生（L5 不接力）');
+    }
+    else if (!config.storage.shared_across_workspaces) {
+        logger.info('dsh-daughter: shared_across_workspaces=false，L5 只在同一工作区内接力');
     }
     if (!config.storage.single_writer) {
         logger.warn('dsh-daughter: single_writer=false，已关闭写锁，请确认没有并发写者');
@@ -291,6 +323,26 @@ function mergeDeep(base, override) {
     return result;
 }
 function normalizeConfig(config) {
+    // 隔离开关：只有明确写 false 才关，其它写法（缺省、字符串、undefined）都按默认开启
+    config.storage.shared_across_sessions = config.storage.shared_across_sessions !== false;
+    config.storage.shared_across_workspaces = config.storage.shared_across_workspaces !== false;
+    // 跨窗口时间感：分钟取整且至少 1，条数夹在 0–8
+    config.continuity.enabled = config.continuity.enabled !== false;
+    config.continuity.cross_window_minutes = Math.max(1, Math.round(num(config.continuity.cross_window_minutes, 45)));
+    config.continuity.cross_window_max = Math.max(0, Math.min(8, Math.round(num(config.continuity.cross_window_max, 2))));
+    // 局的归并：相似度夹在 0–1，时间窗口与条数取整
+    config.threading.enabled = config.threading.enabled !== false;
+    config.threading.similarity = clampUnit(config.threading.similarity, 0.25);
+    config.threading.gap_minutes = Math.max(1, Math.round(num(config.threading.gap_minutes, 45)));
+    config.threading.activity_ttl_minutes = Math.max(1, Math.round(num(config.threading.activity_ttl_minutes, 180)));
+    config.threading.closed_retention_minutes = Math.max(1, Math.round(num(config.threading.closed_retention_minutes, 1440)));
+    // 收尾话术：只留非空字符串；整组被写成空时退回默认，否则"结了没"永远判不出来
+    const closing = Array.isArray(config.threading.closing_phrases)
+        ? config.threading.closing_phrases.filter((phrase) => typeof phrase === 'string' && phrase.trim().length > 0)
+        : [];
+    config.threading.closing_phrases = closing.length > 0 ? closing : [...defaultConfig.threading.closing_phrases];
+    config.threading.max_summary_turns = Math.max(2, Math.min(12, Math.round(num(config.threading.max_summary_turns, 4))));
+    config.threading.max_injected = Math.max(0, Math.min(6, Math.round(num(config.threading.max_injected, 2))));
     config.retrieval.top_k = Math.max(1, Math.round(num(config.retrieval.top_k, 5)));
     config.retrieval.min_semantic = clampUnit(num(config.retrieval.min_semantic, 0.01), 0.01);
     // 回看感受的触发距离：0 会让每次召回都写一条，1 等于永不写，两端都无意义

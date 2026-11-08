@@ -20,12 +20,14 @@ import type {
   SkillActivation,
   SpeakPlan,
   SubPersona,
+  WindowNamer,
 } from './types.js';
 import type { Logger } from './util.js';
-import { createRng, relativeTime, silentLogger, truncate } from './util.js';
+import { createRng, relativeTime, safeFileName, silentLogger, truncate } from './util.js';
 import { applyBodySignal, pickMotionByPad } from './runtime/body-link.js';
 import { decideIngest, type FilterAction } from './runtime/filter.js';
-import { createInitialL5, selectSubpersona, updateL5 } from './runtime/state.js';
+import { carryL5, createInitialL5, selectSubpersona, updateL5 } from './runtime/state.js';
+import { assignThread, isDialogueSource, pruneOpenThreads, type ThreadHead } from './runtime/threading.js';
 import { evaluateSpeak, localDayKey } from './runtime/speak.js';
 import { readForeground } from './runtime/desktop-observe.js';
 import { containsDiagnosisLabel, evaluateSafety } from './runtime/safety.js';
@@ -43,8 +45,10 @@ import {
   NO_MEMORY_CONSTRAINT,
   activateSkills,
   buildBlocks,
+  buildCrossWindowDigest,
   buildEventDigest,
   buildPersonaText,
+  buildThreadDigest,
   buildRelationText,
   buildSkillDigest,
   buildStateHint,
@@ -68,10 +72,10 @@ import {
 const RETRIEVE_BUDGET_MS = 150;
 const BEFORE_PROMPT_BUDGET_MS = 100;
 
-/** 换对话框后的第一句：接上"上一个对话的结尾"最多带几条、往前看多久 */
-const CONTINUATION_LIMIT = 2;
-const CONTINUATION_WINDOW_MS = 30 * 86_400_000;
-/** 已见过首轮的会话集合上限，超了整体清空（只影响"是否首轮"，丢一次判断无副作用） */
+/** 换对话框后的第一句：接上"上一段对话的结尾"最多带几条、往前看多久 */
+const CONTINUATION_LIMIT = 3;
+const CONTINUATION_WINDOW_MS = 7 * 86_400_000;
+/** 已见过首轮的会话集合上限（超出按最久未用淘汰，不再整体清空） */
 const SEEN_SESSIONS_CAP = 512;
 
 export interface PluginOptions {
@@ -111,6 +115,8 @@ class Daughter implements DaughterPlugin {
   private readonly handledTurns = new Map<string, number>();
   /** 已经构建过 prompt 的会话：只有第一次才允许"续接上一个对话" */
   private readonly seenSessions = new Set<string>();
+  /** 每个窗口已经贴过的"别处刚说的话"，跨窗口轨道靠它去重，避免同一件事反复提醒 */
+  private readonly injectedCross = new Map<string, Set<string>>();
   private readonly rng: () => number;
   private readonly onMotion?: (motionId: string) => void;
   /** 连接器令牌：主动开口探测桌面桥时带上（§12.2） */
@@ -148,8 +154,7 @@ class Daughter implements DaughterPlugin {
     const overdraftDelta = l5.stress > 0.7 ? 0.03 : -0.01;
     l5.emotionalOverdraft = Math.min(1, Math.max(0, l5.emotionalOverdraft + overdraftDelta));
     store.saveOverdraft(l5.emotionalOverdraft);
-    store.saveL5(l5);
-    this.sessions.set(sessionKey(ctx), l5);
+    this.commitL5(store, ctx, l5);
 
     this.logger.debug('on_user_message', {
       sessionId: ctx.sessionId,
@@ -215,21 +220,65 @@ class Daughter implements DaughterPlugin {
     // 换对话框后的第一句：先接上"上一个对话的结尾"。
     // 换窗口时"刚才"比"情绪像"更该被想起，所以它排在一跳联想之前——
     // 这条路径只在该会话第一次构建 prompt 时走一次。
-    const sessionId = sessionKey(ctx);
-    const firstTurn = !this.seenSessions.has(sessionId);
-    this.seenSessions.add(sessionId);
-    if (this.seenSessions.size > SEEN_SESSIONS_CAP) this.seenSessions.clear();
+    // 缓存键（角色::会话）与库里的 session_id 是两回事：查库必须用原样的会话 id，
+    // 否则"排除本窗口"这条永远不成立，本窗口刚说的话会被当成别处说的贴回来。
+    const cacheKey = sessionKey(ctx);
+    const firstTurn = !this.seenSessions.has(cacheKey);
+    this.markSeen(cacheKey);
+    // 窗口名字：按第一次出现的顺序发「窗1」「窗2」并落库，重启后还是同一个名
+    const namer = this.windowNamer(ctx.characterId);
 
     const nowMs = Date.parse(now);
+    // 续接是个固定槽位，不再给字面命中让位：早期要求"这一句没撞上任何旧事"才续接，
+    // 于是换窗口后正好提到某件旧事时，"刚才说到哪儿"反而被顶掉了——那正是最该接上的时候。
+    const hitIds = new Set(withSurprise.map((hit) => hit.event.id));
     const continued: RetrievalHit[] =
-      firstTurn && this.config.association.fallback_when_no_match && withSurprise.length === 0
+      firstTurn && this.config.association.fallback_when_no_match
         ? store
             .listRecentEvents(
               new Date(Number.isFinite(nowMs) ? nowMs - CONTINUATION_WINDOW_MS : 0).toISOString(),
-              CONTINUATION_LIMIT,
+              CONTINUATION_LIMIT + hitIds.size,
             )
-            .map((event) => ({ event, score: event.weight, reason: '续接（上一个对话的结尾）' }))
+            .filter((event) => !hitIds.has(event.id))
+            .slice(0, CONTINUATION_LIMIT)
+            .map((event) => ({ event, score: event.weight, reason: '续接（上一段对话的结尾）' }))
         : [];
+    const continuedIds = new Set(continued.map((hit) => hit.event.id));
+
+    // 窗口只是工位，不是记忆分区：别的窗口里刚说的话，每轮都补进来，
+    // 这样"在 1 里说要去跑步，到 2 里说你好"才会接上一句"不是跑了吗"。
+    const injectedCross = this.injectedCross.get(cacheKey) ?? new Set<string>();
+    const contentKey = (event: EventRecord): string => `${event.title}\u0000${event.summary}`;
+    const crossCandidates = this.config.continuity.enabled
+      ? store
+          .listRecentElsewhere(
+            new Date(
+              Number.isFinite(nowMs) ? nowMs - this.config.continuity.cross_window_minutes * 60_000 : 0,
+            ).toISOString(),
+            this.config.continuity.cross_window_max + injectedCross.size + hitIds.size + continuedIds.size,
+            // 原样会话 id：库里存的就是它，换成缓存键会让"排除本窗口"失效
+            ctx.sessionId,
+          )
+          .filter(
+            (event) => !hitIds.has(event.id) && !continuedIds.has(event.id) && !injectedCross.has(event.id),
+          )
+          .map((event) => ({
+            event,
+            score: event.weight,
+            reason: '跨窗口（刚在别处说的）',
+            window: namer(event.sessionId),
+          }))
+      : [];
+    // 同一个东西被记过好几次（同一个视频刷到五次），这一块只留最新的一条
+    const seenCross = new Set<string>();
+    const crossWindow = crossCandidates.filter((hit) => {
+      const key = contentKey(hit.event);
+      if (seenCross.has(key)) return false;
+      seenCross.add(key);
+      return true;
+    }).slice(0, this.config.continuity.cross_window_max);
+    for (const hit of crossWindow) injectedCross.add(hit.event.id);
+    this.injectedCross.set(cacheKey, injectedCross);
 
     // 一条字面命中都没有时，仍然可以从记忆网里往外摸：
     // 人想不起直接对应的事，不会因此停止联想，而是从"当下情绪最像、时间最近"的那段记忆顺下去。
@@ -268,6 +317,8 @@ class Daughter implements DaughterPlugin {
     // §10.1 降级收紧主动联想：档位 1 砍半，档位 2 起整个联想块不再注入
     const associationLimit =
       verdict.level >= 2 ? 0 : verdict.level >= 1 ? Math.ceil(associatedViews.length / 2) : associatedViews.length;
+    // 联想块保留内容而不是只给 eventId：事件块可能被预算裁掉，联想块是它被裁后的备份；
+    // 同时带上"由哪条想到"，这是事件块给不出的路径信息
     const associationText =
       associationLimit > 0
         ? `[联想]\n${associatedViews
@@ -302,21 +353,53 @@ class Daughter implements DaughterPlugin {
     // 续接条目不算命中：不进 promptCache.hits，也就不写 recallCount / weight，
     // 否则每开一个新窗口它都被强化一次，最后永远排在最前面。
     const memoryHit = withSurprise.length > 0 || associationDigest.length > 0;
-    const injected = continued.length > 0 ? [...injectedHits, ...continued] : injectedHits;
+    // 跨窗口不进事件块：单独一块，独立预算，不受当前话题检索与预算裁剪影响
+    // 同一条只贴一个地方：跨窗口块已经给过的内容，事件块不再重复贴一遍；
+    // 事件块内部也按内容去重（同一个视频刷到五次，也只占一行）
+    const crossKeys = new Set(crossWindow.map((hit) => contentKey(hit.event)));
+    const seenContent = new Set<string>();
+    const injected = [...injectedHits, ...continued].filter((hit) => {
+      const key = contentKey(hit.event);
+      if (crossKeys.has(key) || seenContent.has(key)) return false;
+      seenContent.add(key);
+      return true;
+    });
 
     // §4.4 全文层：只在命中且全文确实比摘要更长时取摘录，由事件块的 cap 兜底
     const excerpts = this.config.retrieval.expand_fulltext
       ? this.collectExcerpts(store, injected)
       : undefined;
 
+    // 进行中的局：角色级共享，两个窗口看到同一局的前情摘要（§8.2）
+    const prunedThreads = this.config.threading.enabled
+      ? pruneOpenThreads(
+          store.loadOpenThreads(),
+          now,
+          this.config.threading.activity_ttl_minutes,
+          6,
+          this.config.threading.closed_retention_minutes,
+        )
+      : [];
+    // 开着的最多 max_injected 局；另外固定带一条最近收尾的——
+    // "结了没"得有个交代，昨晚那局也要留着落脚处，不能整段砍掉
+    const openHeads = prunedThreads
+      .filter((head) => head.status !== 'closed')
+      .slice(0, this.config.threading.max_injected);
+    const closedHead = prunedThreads.find((head) => head.status === 'closed');
+    const openThreads = closedHead ? [...openHeads, closedHead] : openHeads;
+    // 带上本窗口的名字与 id：局的最后一句要标清"这儿/别处"，不然自己的话会被当成对方的
+    const threadText = buildThreadDigest(openThreads, now, ctx.sessionId, namer);
+
     const { blocks, usedTokens } = buildBlocks({
       personaText: [buildPersonaText(persona, sub), relationText, WORKING_STYLE].filter(Boolean).join('\n'),
       stateHint: buildStateHint(l5, verdict),
-      eventDigest: buildEventDigest(injected, excerpts, now),
+      eventDigest: buildEventDigest(injected, excerpts, now, ctx.sessionId, namer),
+      crossWindowText: buildCrossWindowDigest(crossWindow, now, ctx.sessionId, namer),
+      threadText,
       skillDigest: buildSkillDigest(activation),
       associationText,
-      // 有内容就不能说"没有任何记录"：续接条目不算命中，但块里确实列了往事
-      constraint: injected.length > 0 ? null : NO_MEMORY_CONSTRAINT,
+      // 有内容就不能说"没有任何记录"：续接/跨窗口不算命中，但块里确实列了往事
+      constraint: injected.length > 0 || crossWindow.length > 0 || openThreads.length > 0 ? null : NO_MEMORY_CONSTRAINT,
       config: this.config,
     });
 
@@ -390,9 +473,30 @@ class Daughter implements DaughterPlugin {
     const toolsUsed = input.toolsUsed ?? [];
 
     const event = extractEvent(ctx, userText, assistantText, l5, this.rng);
+    // "局"归并：时间相邻 + 话题相似的事件归成一个 thread（跨窗口也算同一局）
+    let openThreads: ThreadHead[] | null = null;
+    if (this.config.threading.enabled && isDialogueSource(event.source)) {
+      // 原话一起交给归并：摘要只记话题，"卡在哪"要靠原话才接得上
+      const assigned = assignThread(event, store.loadOpenThreads(), this.config, userText);
+      event.threadId = assigned.threadId;
+      openThreads = assigned.heads;
+    }
     // 全文层写完整的问 + 答，摘要层只留压缩版（§4.4）
     const ingested = this.ingest(store, event, `${userText.trim()}\n→ ${assistantText.trim()}`.trim());
-    if (ingested.action === 'keep') linkNewEvent(store, event);
+    if (ingested.action === 'keep') {
+      if (openThreads) {
+        store.saveOpenThreads(
+          pruneOpenThreads(
+            openThreads,
+            now,
+            this.config.threading.activity_ttl_minutes,
+            6,
+            this.config.threading.closed_retention_minutes,
+          ),
+        );
+      }
+      linkNewEvent(store, event);
+    }
 
     const cache = this.promptCache.get(sessionKey(ctx));
     const skillsUpdated: string[] = [];
@@ -649,7 +753,7 @@ class Daughter implements DaughterPlugin {
           Math.max(-1, next.emotion[key as 'pleasure' | 'arousal' | 'dominance'] + value),
         );
       }
-      store.saveL5(next);
+      this.commitL5(store, input.ctx, next);
     }
     let ok = true;
     if (matched.action.kind === 'motion') {
@@ -889,6 +993,7 @@ class Daughter implements DaughterPlugin {
     this.promptCache.clear();
     this.userTextCache.clear();
     this.sourceCache.clear();
+    this.injectedCross.clear();
     this.observers.clear();
     this.bodyCache.clear();
   }
@@ -982,6 +1087,32 @@ class Daughter implements DaughterPlugin {
     return excerpts;
   }
 
+  /**
+   * 窗口名字：按第一次出现的顺序发「窗1」「窗2」并落库。
+   * 早先用会话 id 的哈希（"窗SX"），谁也看不出那是什么意思；序号才是"哪个窗"。
+   * 名字一旦发出去就不再变，换个窗口才拿新号。
+   */
+  private windowNamer(characterId: string): WindowNamer {
+    const store = this.store(characterId);
+    const names = store.loadWindowNames();
+    const used = new Set(
+      Object.values(names)
+        .map((name) => Number(name.replace(/\D/g, '')))
+        .filter((value) => Number.isFinite(value) && value > 0),
+    );
+    return (sessionId?: string | null): string => {
+      if (!sessionId) return '旧窗口';
+      const known = names[sessionId];
+      if (known) return known;
+      let next = 1;
+      while (used.has(next)) next += 1;
+      used.add(next);
+      names[sessionId] = `窗${next}`;
+      store.saveWindowNames(names);
+      return names[sessionId]!;
+    };
+  }
+
   private store(characterId: string): Store {
     let store = this.stores.get(characterId);
     if (!store) {
@@ -998,10 +1129,56 @@ class Daughter implements DaughterPlugin {
   private getL5(ctx: PluginContext, persona: PersonaBundle): L5State {
     const cached = this.sessions.get(sessionKey(ctx));
     if (cached) return cached;
-    const loaded = this.store(ctx.characterId).loadL5(ctx.sessionId);
-    const l5 = loaded ?? createInitialL5(ctx.characterId, ctx.sessionId, ctx.now(), persona, this.store(ctx.characterId).loadOverdraft());
+    const store = this.store(ctx.characterId);
+    const loaded = store.loadL5(ctx.sessionId);
+    // 新会话没有自己的快照时，接着上一段走（受 storage.shared_across_* 控制）
+    const carried = loaded ? null : this.carriedL5(store, ctx, persona);
+    const l5 = loaded
+      ?? carried
+      ?? createInitialL5(ctx.characterId, ctx.sessionId, ctx.now(), persona, store.loadOverdraft());
+    l5.emotionalOverdraft = store.loadOverdraft();
     this.sessions.set(sessionKey(ctx), l5);
     return l5;
+  }
+
+  /**
+   * 接力上一段「此刻」：间隔按 emotion_relax 复利回落，所以隔五分钟原样、隔一夜平复但不归零。
+   * 隔离范围由配置决定：session（不接力）/ workspace（只在同一工作区内接力）/ character（默认）。
+   */
+  private carriedL5(store: Store, ctx: PluginContext, persona: PersonaBundle): L5State | null {
+    const scope = this.carryScope(ctx);
+    if (!scope) return null;
+    // character 范围允许回退到"最近一次会话"：旧存档没有接力快照，升级当次也要能接上。
+    // workspace 范围不回退——旧快照里没有 workspace 字段，猜一个等于把工作窗口串到私人窗口。
+    const previous = store.loadL5Carry(scope) ?? (scope === 'character' ? store.latestL5() : null);
+    if (!previous || previous.sessionId === ctx.sessionId) return null;
+    return carryL5(previous, ctx.sessionId, ctx.now(), persona, this.config);
+  }
+
+  /** null = 不接力（每个会话从基线重新出生） */
+  private carryScope(ctx: PluginContext): string | null {
+    if (!this.config.storage.shared_across_sessions) return null;
+    if (this.config.storage.shared_across_workspaces) return 'character';
+    return `ws.${safeFileName(ctx.workspaceId)}`;
+  }
+
+  /** 写回 L5 的唯一出口：落盘 + 刷新接力快照，避免两条写入路径有一处忘了同步 */
+  private commitL5(store: Store, ctx: PluginContext, l5: L5State): void {
+    store.saveL5(l5);
+    const scope = this.carryScope(ctx);
+    if (scope) store.saveL5Carry(scope, l5);
+    this.sessions.set(sessionKey(ctx), l5);
+  }
+
+  /** 记「这个会话已经走过首轮」。超上限按最久未用淘汰；早年是整体 clear()，会把老会话全打回首轮 */
+  private markSeen(sessionId: string): void {
+    this.seenSessions.delete(sessionId);
+    this.seenSessions.add(sessionId);
+    while (this.seenSessions.size > SEEN_SESSIONS_CAP) {
+      const oldest = this.seenSessions.values().next().value;
+      if (oldest === undefined) break;
+      this.seenSessions.delete(oldest);
+    }
   }
 
   private pickSubpersona(persona: PersonaBundle, audience: PluginContext['audience'], currentId: string): SubPersona {

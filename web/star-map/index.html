@@ -361,6 +361,15 @@ function pctLabel(value) {
   return Math.round(Number(value) * 100) + '%';
 }
 
+/* 心情分布：五档权重里非零的档都留着，才看得出「中性 0.75 / 喜欢 0.25」这种混合 */
+function moodSpectrum(meta, count) {
+  const moods = Array.isArray(meta.moods) ? meta.moods.filter((item) => Number(item.weight) > 0) : [];
+  if (moods.length === 0) return '';
+  const sorted = moods.slice().sort((a, b) => Number(b.weight) - Number(a.weight));
+  const picked = typeof count === 'number' ? sorted.slice(0, count) : sorted;
+  return picked.map((item) => item.label + ' ' + Number(item.weight).toFixed(2)).join(' / ');
+}
+
 /* ------------------------- 节点详情：完全依赖 meta 映射 ------------------------- */
 
 function describe(node) {
@@ -395,7 +404,8 @@ function describe(node) {
     add('事件条数', meta.eventCount);
     if (meta.preference !== undefined) {
       add('偏好', meta.mood + '（' + pctLabel(Math.abs(Number(meta.preference))) + '）');
-      add('偏向值', num(meta.preference, 3));
+      add('偏向值', num(meta.preference, 2));
+      add('心情分布', moodSpectrum(meta));
     }
   } else if (node.type === 'place' || node.type === 'emotion') {
     add('事件条数', meta.eventCount);
@@ -450,7 +460,7 @@ function brief(node) {
     return [['亲密度', pctLabel(meta.intimacy ?? 0)], ['关系', (meta.relationship ?? '—') + ' · ' + (meta.trend ?? '—')]];
   }
   if (node.type === 'thing') {
-    return [['事件条数', meta.eventCount ?? 0], ['偏好', meta.mood ?? '—']];
+    return [['事件条数', meta.eventCount ?? 0], ['偏好', moodSpectrum(meta, 1) || (meta.mood ?? '—')]];
   }
   if (node.type === 'place' || node.type === 'emotion') {
     return [['事件条数', meta.eventCount ?? 0], ['备注', meta.note ?? '—']];

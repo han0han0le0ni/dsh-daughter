@@ -15,7 +15,7 @@
 | 记忆被单向来源淹没 | `filter.burst` 同源爆发抑制（60 min / 3 条，`chat/qq/douyin_dm` 豁免） | 真实库 `filter.drop = 13` |
 | 回忆重构从不触发 | `retrieval.reconstruct_distance` 可配（0.08，附真实分布 p50 0.04 / p90 0.14 标定） | 真实库 0 → 25 行 |
 | 回看记录批量爆发 | 每轮只写位移最大一条 + 同事件 6h 冷却（可配） | 新代码后单轮只写 1 条 |
-| 换对话框断片 | 首轮续接最近 1–2 条（30 天内），不写 `recallCount` | §8.2 已记录 |
+| 换对话框断片 | 首轮续接恒占一个槽位（最近 1–3 条 / 7 天内），不再被字面命中挤掉；L5 情绪按 `shared_across_*` 接力 | §8.2 已记录 |
 | 联想退化为随机游走 | 边按 strength 降序遍历、弱边 <0.2 跳过、多路径残值累加、带 `path/depth` | 单测覆盖 |
 | 语义为 0 也算"相关记忆" | `retrieval.min_semantic` 门禁 + 单字弱命中 | `association.test.ts` |
 | 单向输入被记成"共同经历" | `participantsFor()` 按来源推导 | 存量 23 条已迁移 |

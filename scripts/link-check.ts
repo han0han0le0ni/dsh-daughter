@@ -109,7 +109,6 @@ async function main(): Promise<void> {
       [
         'storage:',
         '  scope: session',
-        '  shared_across_sessions: false',
         '  single_writer: false',
         'safety:',
         '  diagnosis_labels_forbidden: false',
@@ -123,7 +122,8 @@ async function main(): Promise<void> {
     const sink: string[] = [];
     const config = loadConfig(dir, makeLogger(sink));
     const warns = sink.length;
-    if (warns < 4) throw new Error(`告警不足：${warns}`);
+    // shared_across_* 已转为「真正生效的隔离开关」，只在 info 里说明，不再计入告警
+    if (warns < 3) throw new Error(`告警不足：${warns}`);
     if (config.vpet.body_link.max_influence !== 1) throw new Error('max_influence 未收敛');
     if (config.vpet.body_link.stale_ms !== 30_000) throw new Error('stale_ms 未收敛');
     return `${warns} 条告警，max_influence=${config.vpet.body_link.max_influence}，stale_ms=${config.vpet.body_link.stale_ms}`;

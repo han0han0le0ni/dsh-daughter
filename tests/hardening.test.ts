@@ -303,7 +303,7 @@ test('§10.2 诊断词检查受 diagnosis_labels_forbidden 控制', async () => 
   rmSync(root, { recursive: true, force: true });
 });
 
-test('§11 未实现分支的配置项会显式告警', () => {
+test('§11 未实现分支的配置项会显式告警；shared_across_* 已生效不再告警', () => {
   const root = makeRoot();
   writeFileSync(
     join(root, 'config.yaml'),
@@ -319,9 +319,10 @@ test('§11 未实现分支的配置项会显式告警', () => {
   );
 
   const warnings: string[] = [];
+  const infos: string[] = [];
   const logger: Logger = {
     debug: () => undefined,
-    info: () => undefined,
+    info: (msg) => infos.push(msg),
     warn: (msg) => warnings.push(msg),
     error: () => undefined,
   };
@@ -329,7 +330,10 @@ test('§11 未实现分支的配置项会显式告警', () => {
   const config = loadConfig(root, logger);
   assert.equal(config.storage.scope, 'session');
   assert.ok(warnings.some((line) => line.includes('storage.scope')));
-  assert.ok(warnings.some((line) => line.includes('shared_across_*')));
+  // shared_across_* 从"占位告警"变成真开关：不再进警告，只在 info 里说明按哪种隔离跑
+  assert.equal(config.storage.shared_across_sessions, false);
+  assert.ok(!warnings.some((line) => line.includes('shared_across_*')));
+  assert.ok(infos.some((line) => line.includes('shared_across_sessions')));
   assert.ok(warnings.some((line) => line.includes('single_writer')));
   assert.ok(warnings.some((line) => line.includes('diagnosis_labels_forbidden')));
 

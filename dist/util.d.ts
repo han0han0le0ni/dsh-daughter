@@ -66,4 +66,17 @@ export declare function daysBetween(from: string, to: string): number;
  * 一天以上按 24 小时折算（"昨天"= 24–48 小时前），不做日历日边界——注入不需要那么精确。
  */
 export declare function relativeTime(from: string, to: string): string;
+/**
+ * 绝对时间戳（本地时钟）：今天的显示 `HH:MM`，更早的显示 `MM-DD HH:MM`。
+ * 跨窗口连贯性用它：相对时间只说"多久前"，绝对时钟才能把"我跑了 → 你好"接成一条时间线。
+ */
+export declare function formatTimestamp(iso: string, now?: string): string;
+/**
+ * 窗口的名字：同一个会话每次都叫同一个名，换个窗口就换个名。
+ *
+ * 没有名字时，注入的每行只有时间戳，"这句话是我在这边刚说的"和"是那边说的"分不开，
+ * 本窗口的话被当成别处的、自己跟自己的回声往下推。给窗口一个能念出来的短名，
+ * 贴过来时就能标清哪句是这儿、哪句是别处。
+ */
+export declare function windowName(sessionId?: string | null): string;
 export declare function truncate(text: string, max: number): string;

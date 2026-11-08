@@ -1,5 +1,6 @@
 import { scoreSkills } from './motivation.js';
-import { clamp01, diceSimilarity, estimateTokens, relativeTime, truncate } from '../util.js';
+import { MOOD_ANCHORS, STAGE_ANCHORS, distribute, formatWeights, labelWeight, poleWeight, progress, topLabels, } from './weights.js';
+import { clamp01, diceSimilarity, estimateTokens, formatTimestamp, relativeTime, truncate, windowName } from '../util.js';
 /* -------------------------------- 人格小段 -------------------------------- */
 /** 做任务时的说话节奏：不让模型在连续工具调用中保持沉默。 */
 export const WORKING_STYLE = [
@@ -8,22 +9,48 @@ export const WORKING_STYLE = [
     '像坐在对方旁边一起盯着屏幕，不要念工具名、参数和坐标。',
     '一次只交代一步，不要一次说完整个计划。',
 ].join('\n');
+/**
+ * 五维性格的两极措辞。判断只用 0.50 分个方向，强度交给 `poleWeight`：
+ * 0.86 是"对新东西好奇 0.72"，0.52 只有 0.04，说不出口就不说，避免把噪声写成性格。
+ */
+const TRAIT_POLES = [
+    { key: 'extraversion', high: '愿意主动说话', low: '话不多，先观察' },
+    { key: 'agreeableness', high: '不太会拒绝', low: '该拒绝时会拒绝' },
+    { key: 'neuroticism', high: '容易反复想', low: '情绪不太起浪' },
+    { key: 'openness', high: '对新东西好奇', low: '更信熟悉的做法' },
+    { key: 'conscientiousness', high: '按部就班', low: '想到哪做到哪' },
+];
+/** 性格权重：各维独立强度（0.00–1.00，两位小数），取最强三档，彼此不归一 */
+export function traitWeights(bigFive) {
+    return TRAIT_POLES.map((pole) => {
+        const value = bigFive[pole.key];
+        return { label: value >= 0.5 ? pole.high : pole.low, weight: poleWeight(value) };
+    })
+        .filter((trait) => trait.weight >= 0.3)
+        .sort((a, b) => b.weight - a.weight)
+        .slice(0, 3);
+}
+/** 关系：主档按已存阶段（回退有迟滞），括号里给权重，顺带说在往哪一档走 */
+export function stageLine(l2) {
+    const weights = progress(l2.relationshipDepth, STAGE_ANCHORS, l2.relationshipStage);
+    const current = weights[0];
+    if (!current)
+        return '还在认识';
+    const next = weights[1];
+    // 权重放在括号里当读数：它是描述关系的量，不该喧宾夺主盖过"已经比较熟"这几个字
+    const head = `${stageWord(current.label)}（${current.weight.toFixed(2)}）`;
+    if (!next || next.weight <= 0)
+        return head;
+    return `${head}，正在往"${stageWord(next.label)}"走（${next.weight.toFixed(2)}）`;
+}
 export function buildPersonaText(persona, sub) {
-    const b = persona.l1.bigFive;
-    const traits = [temperamentWord(persona.l1.temperament)];
-    if (b.extraversion > 0.6)
-        traits.push('愿意主动说话');
-    else if (b.extraversion < 0.4)
-        traits.push('话不多，先观察');
-    if (b.agreeableness > 0.6)
-        traits.push('不太会拒绝');
-    if (b.neuroticism > 0.6)
-        traits.push('容易反复想');
-    if (b.openness > 0.6)
-        traits.push('对新东西好奇');
+    const traits = traitWeights(persona.l1.bigFive)
+        .map((trait) => `${trait.label}（${trait.weight.toFixed(2)}）`)
+        .join('，');
+    const base = traits.length > 0 ? `${temperamentWord(persona.l1.temperament)}，${traits}` : temperamentWord(persona.l1.temperament);
     return [
-        `你是一个有稳定底色的存在：${traits.join('，')}。`,
-        `和对方的关系：${stageWord(persona.l2.relationshipStage)}，信任还在慢慢建立。`,
+        `你是一个有稳定底色的存在：${base}。`,
+        `和对方的关系：${stageLine(persona.l2)}，信任还在慢慢建立。`,
         `此刻面对对方的方式：${sub.tone}。`,
         sub.boundaries.length > 0 ? `不主动提起：${sub.boundaries.join('、')}。` : '',
     ]
@@ -31,20 +58,58 @@ export function buildPersonaText(persona, sub) {
         .join('\n');
 }
 /**
- * 关系与偏好注入：把人物画像（亲密度/关系变化）、事物喜好、善恶观压缩成三行。
+ * 关系与偏好注入：把人物画像（亲密度/关系变化）、事物喜好、善恶观压缩成几行。
  * 星图与 prompt 共用同一套计算，避免两处口径不一致。
+ *
+ * 偏好行不再静默消失：没有明确喜恶时退成"最近常聊"，把她攒下来的相处量说出来——
+ * 主档叫"中性"不等于这段关系没内容，只是还没长出喜恶。
  */
 export function buildRelationText(input) {
     const lines = [];
     if (input.person) {
         lines.push(`和对方的关系：${input.person.relationship}（亲密度 ${Math.round(input.person.intimacy * 100)}%），最近${input.person.trend}。`);
     }
-    const liked = input.things.filter((thing) => thing.mood === '喜欢').slice(0, 3).map((thing) => thing.label);
-    const disliked = input.things.filter((thing) => thing.mood === '不喜欢').slice(0, 3).map((thing) => thing.label);
-    if (liked.length > 0 || disliked.length > 0) {
-        lines.push(`对方的偏好：${[liked.length > 0 ? `喜欢 ${liked.join('、')}` : '', disliked.length > 0 ? `不喜欢 ${disliked.join('、')}` : '']
-            .filter(Boolean)
-            .join('；')}。`);
+    // 判"明确"用两档合计（喜欢 + 很喜欢 ≥ 0.60），写出去用最强那一档的自身权重，
+    // 免得把"喜欢 0.80 + 很喜欢 0.20"报成"1.00"，读起来像满分好评
+    const likes_ = ['喜欢', '很喜欢'];
+    const dislikes_ = ['不喜欢', '很不喜欢'];
+    const strongest = (moods, labels) => topLabels(moods.filter((item) => labels.includes(item.label)), 1)[0] ?? { label: '', weight: 0 };
+    const scored = input.things.map((thing) => {
+        const positive = strongest(thing.moods, likes_);
+        const negative = strongest(thing.moods, dislikes_);
+        return {
+            label: thing.label,
+            eventCount: thing.eventCount,
+            liked: labelWeight(thing.moods, likes_),
+            disliked: labelWeight(thing.moods, dislikes_),
+            likedWord: positive.label,
+            likedWeight: positive.weight,
+            dislikedWord: negative.label,
+            dislikedWeight: negative.weight,
+        };
+    });
+    const likes = scored.filter((thing) => thing.liked >= 0.6).sort((a, b) => b.liked - a.liked).slice(0, 3);
+    const dislikes = scored.filter((thing) => thing.disliked >= 0.6).sort((a, b) => b.disliked - a.disliked).slice(0, 3);
+    const named = new Set([...likes, ...dislikes].map((thing) => thing.label));
+    const chats = scored
+        .filter((thing) => !named.has(thing.label))
+        .sort((a, b) => b.eventCount - a.eventCount)
+        .slice(0, 3);
+    if (input.things.length > 0) {
+        const parts = [];
+        // 写成「项目 喜欢 0.80」：主题在前、档位在后，一句话就能看出是哪一档在起作用
+        if (likes.length > 0) {
+            parts.push(likes.map((thing) => `${thing.label} ${thing.likedWord} ${thing.likedWeight.toFixed(2)}`).join('、'));
+        }
+        if (dislikes.length > 0) {
+            parts.push(dislikes.map((thing) => `${thing.label} ${thing.dislikedWord} ${thing.dislikedWeight.toFixed(2)}`).join('、'));
+        }
+        if (parts.length === 0)
+            parts.push('暂时没有明确的喜恶');
+        if (chats.length > 0) {
+            parts.push(`最近常聊 ${chats.map((thing) => `${thing.label}（${thing.eventCount} 次）`).join('、')}`);
+        }
+        lines.push(`对方的偏好：${parts.join('；')}。`);
     }
     lines.push(`善恶观：${input.moral.stance}；红线：${input.moral.redLines.join('、')}。`);
     return lines.join('\n');
@@ -81,11 +146,12 @@ function stageWord(stage) {
 }
 /* -------------------------------- 状态提示 -------------------------------- */
 export function buildStateHint(l5, verdict) {
-    const mood = l5.emotion.pleasure > 0.25 ? '轻快' : l5.emotion.pleasure < -0.25 ? '偏低落' : '平静';
+    // 心情摊成五档分布：pleasure 0.30 是"轻快 0.93、高涨 0.07"，不是非黑即白地贴一个词
+    const moods = formatWeights(topLabels(distribute(l5.emotion.pleasure, MOOD_ANCHORS), 2), { min: 0.1 });
     const stress = l5.stress > 0.6 ? '偏高' : l5.stress > 0.3 ? '有一些' : '很低';
     const safety = l5.safety > 0.6 ? '较稳' : l5.safety > 0.35 ? '一般' : '偏低';
     const fatigue = l5.fatigue > 0.7 ? '明显' : l5.fatigue > 0.35 ? '有一些' : '不明显';
-    const lines = [`情绪偏${mood}，压力${stress}，安全感${safety}，疲劳${fatigue}。`];
+    const lines = [`情绪：${moods || '平静 1.00'}；压力${stress}，安全感${safety}，疲劳${fatigue}。`];
     if (verdict.level >= 1)
         lines.push('表达幅度收一些，不主动展开。');
     if (verdict.level >= 3)
@@ -228,17 +294,79 @@ function matches(rule, userText, l5, source) {
  * 每行带一个相对时间（"3 小时前"/"昨天"）：没有这个锚，模型分不清是刚才还是上个月，
  * `now` 缺省时不显示，便于只关心内容的调用方与测试。
  */
-export function buildEventDigest(hits, excerpts, now) {
+export function buildEventDigest(hits, excerpts, now, currentSessionId, 
+/** 窗口名字的来源：生产环境传落库的编号（窗1/窗2），缺省用稳定短哈希 */
+namer = windowName) {
     if (hits.length === 0)
         return '';
     const lines = hits.map((hit) => {
         const when = now ? relativeTime(hit.event.createdAt, now) : '';
-        const stamp = when ? `${when}｜` : '';
+        // 检索是按人查的，命中可能来自任何窗口：不是这儿的就标出是哪个窗，
+        // 否则两边的话混在一列里，分不清哪句是自己刚说的
+        const fromElsewhere = Boolean(hit.event.sessionId && currentSessionId && hit.event.sessionId !== currentSessionId);
+        const place = hit.window
+            ? `${fromElsewhere ? '别处' : '这儿'}·${hit.window}｜`
+            : fromElsewhere && hit.event.sessionId
+                ? `别处·${namer(hit.event.sessionId)}｜`
+                : hit.reason.includes('跨窗口')
+                    ? '别处｜'
+                    : '';
+        const stamp = `${place}${when ? `${when}｜` : ''}`;
         const base = `- 【${hit.event.id}】${stamp}${truncate(hit.event.title, 24)}｜${truncate(hit.event.summary, 70)}`;
         const excerpt = excerpts?.get(hit.event.id);
         return excerpt ? `${base}｜摘录：${excerpt}` : base;
     });
     return `[相关记忆]\n${lines.join('\n')}`;
+}
+/**
+ * 跨窗口轨道：单独一块、独立预算，不跟"当前话题检索"混在同一块里。
+ * 这样它不受当前窗口上下文影响——无论这边聊什么、检索出多少，这一块都在。
+ *
+ * 每行都标"别处·窗XX"，块头写清这边是哪个窗：不给名字时，本窗口刚说的话
+ * 会被当成别处的，模型就开始对着自己的回声往下推。
+ */
+export function buildCrossWindowDigest(hits, now, currentSessionId, namer = windowName) {
+    if (hits.length === 0)
+        return '';
+    const lines = hits.map((hit) => {
+        // 绝对时间戳在前（10:00 / 11-06 23:00），相对时间跟在括号里——两条窗口之间靠时钟排成一条线
+        const clock = now ? formatTimestamp(hit.event.createdAt, now) : '';
+        const ago = now ? relativeTime(hit.event.createdAt, now) : '';
+        const stamp = [clock, ago ? `（${ago}）` : ''].filter(Boolean).join('');
+        const place = `别处·${hit.window ?? namer(hit.event.sessionId)}`;
+        return `- ${place}｜${stamp ? `${stamp}｜` : ''}${truncate(hit.event.title, 24)}｜${truncate(hit.event.summary, 60)}`;
+    });
+    const header = currentSessionId ? `[另一个窗口] 这边是「${namer(currentSessionId)}」，下面都是别处说的` : '[另一个窗口]';
+    return `${header}\n${lines.join('\n')}`;
+}
+/**
+ * "局"前情摘要：把同一局跨窗口、跨轮的几条事件合成一行，让两个窗口看到的是同一局，
+ * 而不是各捡一条残迹。只给结构（几轮、跨几个窗口、最后一句原话）与开合状态，
+ * 不塞整局全文——"卡在我看不见，等她给线索"这种原话才是下次能接上的地方。
+ */
+export function buildThreadDigest(heads, now, currentSessionId, namer = windowName) {
+    if (heads.length === 0)
+        return '';
+    const lines = heads.map((head) => {
+        const start = now ? formatTimestamp(head.startedAt, now) : '';
+        const last = head.recentEvents[head.recentEvents.length - 1];
+        const state = head.status === 'closed' ? `已结束（${head.closedReason ?? '收尾了'}）` : '还开着';
+        const meta = [start ? `${start} 开始` : '', `${head.turnCount} 轮、跨 ${head.windowCount} 个窗口`, state]
+            .filter(Boolean)
+            .join('；');
+        // 最后一句原话：标清是这儿还是别处说的，免得把自己的话当成对方的
+        const said = last ? truncate(last.quote ?? last.summary, 40) : '';
+        const where = last?.sessionId && currentSessionId
+            ? last.sessionId === currentSessionId
+                ? `这儿·${namer(currentSessionId)}`
+                : `别处·${namer(last.sessionId)}`
+            : '';
+        const at = last && now ? formatTimestamp(last.at, now) : '';
+        const tail = said ? `最后一句 ${[where, at].filter(Boolean).join(' ')}：「${said}」` : '';
+        return `- ${head.label}｜${meta}${tail ? `；${tail}` : ''}`;
+    });
+    const header = currentSessionId ? `[进行中的局]（这边是「${namer(currentSessionId)}」）` : '[进行中的局]';
+    return `${header}\n${lines.join('\n')}`;
 }
 export function buildSkillDigest(activation) {
     const items = [activation.main, ...activation.associated].filter((skill) => Boolean(skill));
@@ -265,12 +393,20 @@ export function buildBlocks(input) {
     const { config } = input;
     const caps = config.budget.block_caps;
     const blocks = [];
+    // 顺序即权重：先说"这局进行到哪儿、别处刚说了什么"，再说"我是谁、此刻什么状态"。
+    // 性格与关系的 0.72/0.64 是读数，不是这一句该接的地方，所以排在记忆后面。
     if (input.constraint)
         blocks.push(makeBlock('constraint', input.constraint, caps.constraint, 1000));
-    blocks.push(makeBlock('persona', input.personaText, caps.persona, 900));
-    blocks.push(makeBlock('state_hint', input.stateHint, caps.state_hint, 850));
+    // 进行中的局：最该被两个窗口共享，优先级最高；预算裁剪碰不到它
+    if (input.threadText)
+        blocks.push(makeBlock('thread', input.threadText, caps.thread, 980));
+    // 跨窗口块优先级高于当前话题检索：预算裁剪先动事件块，也动不到它
+    if (input.crossWindowText)
+        blocks.push(makeBlock('cross_window', input.crossWindowText, caps.cross_window, 940));
     if (input.eventDigest)
-        blocks.push(makeBlock('event_digest', input.eventDigest, caps.event_digest, 500));
+        blocks.push(makeBlock('event_digest', input.eventDigest, caps.event_digest, 900));
+    blocks.push(makeBlock('persona', input.personaText, caps.persona, 600));
+    blocks.push(makeBlock('state_hint', input.stateHint, caps.state_hint, 560));
     if (input.associationText)
         blocks.push(makeBlock('association', input.associationText, caps.association, 350));
     if (input.skillDigest)
@@ -316,6 +452,24 @@ export function clipBlocks(blocks, maxTotal) {
             skill.tokens = estimateTokens(skill.text);
         }
         total = sumTokens(current);
+    }
+    // 高优先级块（跨窗口 / 进行中的局）平时不裁，但连它们一起都放不下时，
+    // 作为最后手段从低到高裁：先跨窗口、再进行中的局——保住绝对预算，也保住优先级。
+    for (const kind of ['cross_window', 'thread']) {
+        while (total > maxTotal) {
+            const block = current.find((item) => item.kind === kind);
+            if (!block)
+                break;
+            const lines = block.text.split('\n');
+            if (lines.length <= 1) {
+                current = current.filter((item) => item.kind !== kind);
+            }
+            else {
+                block.text = lines.slice(0, -1).join('\n');
+                block.tokens = estimateTokens(block.text);
+            }
+            total = sumTokens(current);
+        }
     }
     return { blocks: current, usedTokens: sumTokens(current) };
 }

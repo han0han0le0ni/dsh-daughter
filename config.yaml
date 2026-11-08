@@ -3,7 +3,7 @@
 # 这里是一份"开箱即用"的保守默认值，不含任何个人偏好：
 #   - 所有数值都是代码内置默认值，改这里等价于改默认行为
 #   - 想调整请直接改本文件；升级插件会覆盖本文件，个人配置建议另存备份
-#   - 未实现的配置项（desktop / backend / shared_across_*）会在启动时告警并忽略
+#   - 未实现的配置项（backend）会在启动时告警并忽略；desktop 默认关闭，需显式打开
 version: 1
 character_id: daughter-default
 
@@ -41,6 +41,46 @@ association:
   # 一条字面都没命中时，从"当下情绪最像、时间最近"的记忆顺一跳（§8.2）；
   # 换对话框后的第一句也靠它续接"上一个对话的结尾"。关掉即完全沉默。
   fallback_when_no_match: true
+
+# 窗口只是"工位"，不是记忆分区：换到另一个对话框，刚在别处说的话仍会被想起（§8.2）
+continuity:
+  enabled: true
+  # 别的窗口里多久以内的话算"刚刚"，会补进当前窗口（分钟）。隔太久就不再当"刚才"提
+  cross_window_minutes: 45
+  # 每轮最多补几条"别处刚说的话"，避免把整个对话历史都塞进来
+  cross_window_max: 2
+
+# "局"（进行中的活动）：同一件事跨窗口、跨轮会被切成一堆事件，这里归并成一个 thread，
+# 注入时给前情摘要而不是单条碎片（§8.2）。纯规则、不调模型：Dice 相似度 + 时间间隔。
+threading:
+  enabled: true
+  # 同一局两次发言的最大间隔（分钟），超过就算新的一局
+  gap_minutes: 45
+  # 标题 Dice 相似度门槛（0–1），达到才算同一局
+  similarity: 0.25
+  # 一局多久没动静就算结束（分钟）。超过这个时长就算"已结束（一直没动静）"，
+  # 不再当进行中的事往下推，但仍然留在寄存器里当落脚处
+  activity_ttl_minutes: 180
+  # 已结束的局再留多久才彻底出寄存器（分钟）。默认 24 小时：
+  # "昨晚那局"要还能看见，但别让旧账越攒越多
+  closed_retention_minutes: 1440
+  # 收尾话术：听到这些就算这一局结了（标"已结束"再留一会儿），不必等它自己凉。
+  # 判错只是少挂一局，不会丢记忆；想更宽松就往里加词
+  closing_phrases:
+    - 先这样
+    - 不玩了
+    - 不聊了
+    - 下次再说
+    - 回头再说
+    - 就到这儿
+    - 到此为止
+    - 收工
+    - 晚安
+    - 睡了
+  # 前情摘要最多带几轮
+  max_summary_turns: 4
+  # 每轮最多注入几个"进行中的局"
+  max_injected: 2
 
 skills:
   max_main: 1
@@ -165,6 +205,10 @@ budget:
     persona: 300
     state_hint: 150
     event_digest: 1400
+    # 跨窗口块独立于当前话题检索：预算裁剪先动事件块，也动不到它
+    cross_window: 200
+    # 进行中的局：两个窗口共享同一局的前情摘要，优先级最高
+    thread: 200
     skill_digest: 500
     association: 300
     constraint: 120
@@ -182,7 +226,11 @@ safety:
 
 storage:
   scope: character          # 仅支持 character；其它取值会告警并按角色级运行
+  # 跨会话是否接力「此刻」的 L5（情绪/压力/疲劳/安全感）。事件库与人格始终是角色级。
+  #   true  = 换对话框后接着上一段，按闲置时长自然回落（默认，像人：换房间不清空情绪）
+  #   false = 每个会话从基线重新出生（旧行为，彻底隔离）
   shared_across_sessions: true
+  # false = L5 只在同一 workspace 内接力，换项目/目录不串味（工作窗口与私人窗口互不污染）
   shared_across_workspaces: true
   data_root: .              # 相对于插件根目录；运行时数据都写在这里
   backend: sqlite

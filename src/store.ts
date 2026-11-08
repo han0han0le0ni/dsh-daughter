@@ -24,6 +24,7 @@ import type {
   SkillCard,
   SubPersona,
 } from './types.js';
+import type { ThreadHead } from './runtime/threading.js';
 
 interface EventRow {
   id: string;
@@ -47,6 +48,9 @@ interface EventRow {
   schema_version: number;
   salience: number | null;
   merged_count: number | null;
+  session_id: string | null;
+  workspace_id: string | null;
+  thread_id: string | null;
 }
 
 interface EmotionRow {
@@ -60,6 +64,10 @@ interface EmotionRow {
 /** emotion_now_history 上限；超出后按相邻合并，而不是截断丢弃 */
 const EMOTION_HISTORY_CAP = 8;
 const MERGED_RECALL_REASON = '回忆重构：多次回看感受接近，已合并';
+
+/** 跨会话状态接力的 meta 键前缀，以及最多保留多少个隔离范围（character + 各 workspace） */
+const L5_CARRY_PREFIX = 'l5.carry.';
+const L5_CARRY_MAX_SCOPES = 12;
 
 /** 出厂人格基线：星图面板用它算“相对出厂值的偏移”，只读，不参与写回 */
 export const DEFAULT_L1: L1Baseline = {
@@ -251,8 +259,8 @@ export class Store {
         `INSERT INTO events (id, character_id, title, summary, tags, participants,
           emo_pleasure, emo_arousal, emo_dominance, emo_intensity,
           importance, weight, links, source, created_at, last_recalled_at, recall_count, archived, schema_version,
-          salience, merged_count)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          salience, merged_count, session_id, workspace_id, thread_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         event.id,
@@ -276,6 +284,9 @@ export class Store {
         event.schemaVersion,
         event.salience ?? null,
         event.mergedCount ?? 0,
+        event.sessionId ?? null,
+        event.workspaceId ?? null,
+        event.threadId ?? null,
       );
 
     if (event.emotionNowHistory.length > 0) {
@@ -322,6 +333,68 @@ export class Store {
       .prepare('SELECT * FROM events WHERE character_id = ? ORDER BY created_at ASC')
       .all(this.characterId) as unknown as EventRow[];
     return rows.map((row) => this.mapRow(row));
+  }
+
+  /**
+   * "刚在别处说的话"：时间窗口内、且不来自当前窗口的非归档事件。
+   * 旧存档没有 session_id（NULL），无法判定来自哪，按"可能是别的窗口"处理——
+   * 反正在时间窗内、又在当前检索里没出现，补进来正是用户要的"跨窗口记忆"。
+   */
+  listRecentElsewhere(since: string, limit: number, sessionId: string): EventRecord[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM events
+         WHERE character_id = ? AND archived = 0 AND created_at >= ?
+           AND (session_id IS NULL OR session_id <> ?)
+         ORDER BY created_at DESC LIMIT ?`,
+      )
+      .all(this.characterId, since, sessionId, limit) as unknown as EventRow[];
+    return rows.map((row) => this.mapRow(row));
+  }
+
+  /** 同一局的全部事件（按时间正序）：用来拼这一局的前情摘要或回放 */
+  listThreadEvents(threadId: string): EventRecord[] {
+    const rows = this.db
+      .prepare('SELECT * FROM events WHERE character_id = ? AND thread_id = ? ORDER BY created_at ASC')
+      .all(this.characterId, threadId) as unknown as EventRow[];
+    return rows.map((row) => this.mapRow(row));
+  }
+
+  /** 进行中的局：只存头部索引（最近几轮），是"当前正在做什么"的共享寄存器 */
+  saveOpenThreads(threads: ThreadHead[]): void {
+    this.setMeta('threads.open', JSON.stringify(threads));
+  }
+
+  loadOpenThreads(): ThreadHead[] {
+    const raw = this.getMeta('threads.open');
+    if (!raw) return [];
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      return Array.isArray(parsed) ? (parsed as ThreadHead[]) : [];
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * 窗口的名字：会话 id → 「窗1」「窗2」…
+   * 按第一次出现的顺序排号并落库，所以同一窗口重启后还叫同一个名，
+   * 也不会像哈希那样给出"SX"这种看不出意思的编号。
+   */
+  saveWindowNames(names: Record<string, string>): void {
+    this.setMeta('window.names', JSON.stringify(names));
+  }
+
+  loadWindowNames(): Record<string, string> {
+    const raw = this.getMeta('window.names');
+    if (!raw) return {};
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+      return parsed as Record<string, string>;
+    } catch {
+      return {};
+    }
   }
 
   /** 时间窗口内的非归档事件：动机的情绪记忆只用近段事件，避免全表扫描 */
@@ -588,6 +661,67 @@ export class Store {
     return this.listFiles(this.paths.l5)
       .filter((name) => name.endsWith('.json'))
       .map((name) => name.slice(0, -'.json'.length));
+  }
+
+  /* --------------------------- 跨会话状态接力（L5） --------------------------- */
+
+  /**
+   * 记下"这段会话结束时的此刻"，供下一次同范围的新会话接力。
+   * 存在 meta 表而不是 l5_state/ 目录：那里每多一个文件都会被 listL5Sessions 当成一个会话，
+   * 星图面板会凭空多出一个"会话"。按范围分键，character 一份、每个 workspace 各一份。
+   */
+  saveL5Carry(scope: string, state: L5State): void {
+    this.setMeta(`${L5_CARRY_PREFIX}${scope}`, JSON.stringify({ at: state.lastTickAt, state }));
+    this.pruneL5Carry();
+  }
+
+  /** 最近一次落盘的会话快照：给"升级前没有接力快照"的旧存档兜底，让升级当次就能接力 */
+  latestL5(): L5State | null {
+    let latest: L5State | null = null;
+    for (const sessionId of this.listL5Sessions()) {
+      const state = this.loadL5(sessionId);
+      if (!state) continue;
+      if (!latest || String(state.lastTickAt) > String(latest.lastTickAt)) latest = state;
+    }
+    return latest;
+  }
+
+  loadL5Carry(scope: string): L5State | null {
+    const raw = this.getMeta(`${L5_CARRY_PREFIX}${scope}`);
+    if (!raw) return null;
+    try {
+      const parsed = JSON.parse(raw) as { state?: L5State };
+      const state = parsed.state;
+      if (!state || typeof state.lastTickAt !== 'string') return null;
+      return state;
+    } catch {
+      return null;
+    }
+  }
+
+  /** 只保留最近若干范围的快照：长期跑下去 workspace 会换很多个，旧的留着只是噪声 */
+  private pruneL5Carry(keep = L5_CARRY_MAX_SCOPES): void {
+    try {
+      const rows = this.db
+        .prepare('SELECT key, value FROM meta WHERE key LIKE ?')
+        .all(`${L5_CARRY_PREFIX}%`) as unknown as Array<{ key: string; value: string }>;
+      if (rows.length <= keep) return;
+      const ranked = rows
+        .map((row) => {
+          let at = '';
+          try {
+            at = String((JSON.parse(row.value) as { at?: unknown }).at ?? '');
+          } catch {
+            at = '';
+          }
+          return { key: row.key, at };
+        })
+        .sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0));
+      const remove = this.db.prepare('DELETE FROM meta WHERE key = ?');
+      for (const stale of ranked.slice(keep)) remove.run(stale.key);
+    } catch (error) {
+      this.logger.warn('dsh-daughter: 清理 L5 接力快照失败', { error: String(error) });
+    }
   }
 
   /** 外部生理信号（桌宠体力/心情）；没有文件视为没有桌宠，返回 null */
@@ -947,7 +1081,10 @@ export class Store {
         archived INTEGER NOT NULL DEFAULT 0,
         schema_version INTEGER NOT NULL DEFAULT 1,
         salience REAL,
-        merged_count INTEGER NOT NULL DEFAULT 0
+        merged_count INTEGER NOT NULL DEFAULT 0,
+        session_id TEXT,
+        workspace_id TEXT,
+        thread_id TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_events_character ON events(character_id, archived, weight, created_at);
       CREATE TABLE IF NOT EXISTS emotion_history (
@@ -986,7 +1123,7 @@ export class Store {
       .run(single, single);
   }
 
-  /** 老库补列：认知滤网引入的 salience / merged_count，缺列时原地 ALTER */
+  /** 老库补列：认知滤网（salience/merged_count）与"窗口只是工位"（session/workspace），缺列时原地 ALTER */
   private migrateFilterColumns(): void {
     try {
       const columns = new Set(
@@ -998,8 +1135,11 @@ export class Store {
       if (!columns.has('merged_count')) {
         this.db.exec('ALTER TABLE events ADD COLUMN merged_count INTEGER NOT NULL DEFAULT 0');
       }
+      if (!columns.has('session_id')) this.db.exec('ALTER TABLE events ADD COLUMN session_id TEXT');
+      if (!columns.has('workspace_id')) this.db.exec('ALTER TABLE events ADD COLUMN workspace_id TEXT');
+      if (!columns.has('thread_id')) this.db.exec('ALTER TABLE events ADD COLUMN thread_id TEXT');
     } catch (error) {
-      this.logger.warn('dsh-daughter: 认知滤网列迁移失败', { error: String(error) });
+      this.logger.warn('dsh-daughter: 老库补列迁移失败', { error: String(error) });
     }
   }
 
@@ -1192,6 +1332,9 @@ export class Store {
       archived: row.archived === 1,
       salience: typeof row.salience === 'number' ? row.salience : undefined,
       mergedCount: typeof row.merged_count === 'number' ? row.merged_count : 0,
+      sessionId: row.session_id ?? undefined,
+      workspaceId: row.workspace_id ?? undefined,
+      threadId: row.thread_id ?? undefined,
       schemaVersion: 1,
     };
   }

@@ -14,6 +14,14 @@ import type { Store } from '../store.js';
 import { buildStarPanels } from './panels.js';
 import { clamp01, daysBetween, truncate } from '../util.js';
 import { forgetSweep } from './filter.js';
+import {
+  PREFERENCE_ANCHORS,
+  STAGE_ANCHORS,
+  bucketIndex,
+  distribute,
+  primary,
+  type WeightedLabel,
+} from './weights.js';
 
 export function runTick(
   store: Store,
@@ -172,8 +180,16 @@ export function relaxL5(store: Store, config: DaughterConfig, now: string): numb
   return changed;
 }
 
-const REL_STAGES = ['stranger', 'acquaintance', 'familiar', 'close', 'dependent'] as const;
-const REL_THRESHOLDS = [0, 0.15, 0.35, 0.65, 0.85];
+// 阶段推进、阶段权重、人物画像分档共用同一张锚点表：改一处，三处口径一致
+const REL_STAGES = STAGE_ANCHORS.map((anchor) => anchor.label) as L2Relationship['relationshipStage'][];
+const REL_THRESHOLDS = STAGE_ANCHORS.map((anchor) => anchor.at);
+const RELATION_WORD: Record<string, string> = {
+  stranger: '陌生',
+  acquaintance: '初识',
+  familiar: '熟悉',
+  close: '亲近',
+  dependent: '亲密',
+};
 
 function round3(value: number): number {
   return Number(value.toFixed(3));
@@ -616,13 +632,10 @@ export function maybeFreezeSkill(
   return { frozen: true, assetId: asset.id, evolutionId: entry.id };
 }
 
-/** 亲密度分档：陌生 → 初识 → 熟悉 → 亲近 → 亲密 */
+/** 亲密度分档：陌生 → 初识 → 熟悉 → 亲近 → 亲密（档位边界来自 STAGE_ANCHORS） */
 function relationshipLabel(intimacy: number): string {
-  if (intimacy < 0.15) return '陌生';
-  if (intimacy < 0.35) return '初识';
-  if (intimacy < 0.65) return '熟悉';
-  if (intimacy < 0.85) return '亲近';
-  return '亲密';
+  const stage = STAGE_ANCHORS[bucketIndex(intimacy, STAGE_ANCHORS)]?.label ?? 'stranger';
+  return RELATION_WORD[stage] ?? '陌生';
 }
 
 export interface PersonProfile {
@@ -682,9 +695,12 @@ export function buildPersonProfiles(store: Store, now: string): PersonProfile[] 
 export interface ThingProfile {
   label: string;
   eventCount: number;
-  /** -1..1：负值偏不喜欢，正值偏喜欢 */
+  /** -1..1，两位小数：负值偏不喜欢，正值偏喜欢 */
   preference: number;
-  mood: '喜欢' | '不喜欢' | '中性';
+  /** 主档：分布里权重最高的一档（很不喜欢 / 不喜欢 / 中性 / 喜欢 / 很喜欢） */
+  mood: string;
+  /** 完整分布，两位小数、总和 1.00：一件事可以同时"喜欢 0.62、中性 0.38" */
+  moods: WeightedLabel[];
 }
 
 /** 事物喜好：同一主题在事件里的情绪加权平均，14 天半衰期 */
@@ -709,11 +725,14 @@ export function buildThingProfiles(store: Store, now: string): ThingProfile[] {
   return [...stats.entries()]
     .map(([label, stat]) => {
       const preference = stat.weightSum > 0 ? stat.pleasureSum / stat.weightSum : 0;
+      // 不做单点判定：把偏好摊成五档分布，主档仍与旧的 ±0.15 口径一致
+      const moods = distribute(preference, PREFERENCE_ANCHORS);
       return {
         label,
         eventCount: stat.count,
-        preference: Number(preference.toFixed(3)),
-        mood: (preference >= 0.15 ? '喜欢' : preference <= -0.15 ? '不喜欢' : '中性') as ThingProfile['mood'],
+        preference: Number(preference.toFixed(2)),
+        mood: primary(moods).label,
+        moods,
       };
     })
     .sort((a, b) => b.eventCount - a.eventCount);
@@ -906,7 +925,13 @@ export function buildStarMap(store: Store, now: string): { nodes: number; edges:
       id: `tag:${profile.label}`,
       label: profile.label,
       value: clamp01(profile.eventCount / 8),
-      meta: { eventCount: profile.eventCount, preference: profile.preference, mood: profile.mood },
+      meta: {
+        eventCount: profile.eventCount,
+        preference: profile.preference,
+        mood: profile.mood,
+        // 分布一起进星图：面板可以画"喜欢 0.62 / 中性 0.38"，不再只给一个词
+        moods: profile.moods,
+      },
     });
   }
   for (const event of events) {
