@@ -738,6 +738,13 @@ export interface DaughterConfig {
     expand_fulltext: boolean;
     /** 单条摘录的最大字符数 */
     fulltext_excerpt_chars: number;
+    /**
+     * 相关记忆按「有没有具体原话」挑：带用户原话的对话排前面，
+     * 用户没参与、又是模板化的闲聊/刷视频条目不再占事件块开头的位置。
+     */
+    prefer_quotes: boolean;
+    /** 每轮最多保留几条「无原话且用户未参与」的条目（默认 0 = 全不注入） */
+    max_unquoted: number;
   };
   association: {
     max_depth: number;
@@ -766,6 +773,12 @@ export interface DaughterConfig {
     gap_minutes: number;
     /** 标题 Dice 相似度门槛，达到才算同一局 */
     similarity: number;
+    /**
+     * 同一窗口内隔多久以内的连续发言并成一局（分钟，0 = 关）。
+     * 话题归并会把"换了说法接着聊"拆开，也会把一句随口的话当成一局；
+     * 同一窗口里连着说的话本来就是"这一段在干什么"。
+     */
+    same_window_minutes: number;
     /** 一局多久没动静就算结束，不再注入（分钟） */
     activity_ttl_minutes: number;
     /**
@@ -783,6 +796,11 @@ export interface DaughterConfig {
     max_summary_turns: number;
     /** 每轮最多注入几个"进行中的局" */
     max_injected: number;
+    /**
+     * 前情摘要的标题取哪句：first = 开局那句（默认），recent = 最近一句，none = 不自动起名。
+     * 用户在对话里说「这局叫 X」可随时手动命名，命名后标题就是这个名字。
+     */
+    heading_source: 'first' | 'recent' | 'none';
   };
   skills: {
     max_main: number;
@@ -906,8 +924,14 @@ export interface DaughterConfig {
       patterns: string[];
     };
     habituation: {
-      /** 同题重复判定的时间窗（分钟） */
+      /** 同题重复判定的时间窗（分钟）：窗口内"像"的合并计数 */
       window_minutes: number;
+      /**
+       * 几乎逐字相同的重复（同一段视频刷到五次）用更长的窗口判定。
+       * 真实库里同一段抖音内容跨几个小时各记一份，30 分钟窗拦不住，
+       * 结果单库四分之一的事件是同一条记忆的拷贝。默认 24 小时。
+       */
+      identical_window_minutes: number;
       /** 窗口内同题条目最多保留几次计数，超过后不再入库 */
       max_repeat: number;
     };
@@ -934,6 +958,14 @@ export interface DaughterConfig {
       idle_days: number;
       /** 显著性低于该值才可能被忘却 */
       min_salience: Unit;
+    };
+    /** 入库前的内容完整性筛：模板残留、半截标记、没有实际内容的一律丢掉 */
+    content_guard: {
+      enabled: boolean;
+      /** 去掉标记/标点后至少要有几个可读字符，才算「一句完整的话」 */
+      min_content_chars: number;
+      /** 命中任一子串即视为模板/工具标记残留 */
+      patterns: string[];
     };
   };
   /**

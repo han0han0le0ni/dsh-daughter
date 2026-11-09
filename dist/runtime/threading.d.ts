@@ -27,8 +27,10 @@ export interface ThreadTurn {
 /** 一个 thread 的头部索引，只存最近几轮，够注入"前情"即可 */
 export interface ThreadHead {
     id: string;
-    /** 一局的名称：取开局事件标题 */
+    /** 一局的名称：默认取开局事件标题，也可由用户说「这局叫 X」手动命名 */
     label: string;
+    /** 名字是用户起的，不是自动截出来的 */
+    labelByUser?: boolean;
     startedAt: string;
     lastTurnAt: string;
     turnCount: number;
@@ -45,6 +47,11 @@ export interface ThreadHead {
 }
 /** 只有对话类来源才算"局"：刷到的视频（douyin_content）不该进来开一局 */
 export declare function isDialogueSource(source: EventRecord['source']): boolean;
+/**
+ * 用户自己起局名：「这局叫 X」「给这局起名 X」「把这局改成 Y」。
+ * 只认明确的命名句式；「这局聊什么」「这局是不是该收了」不会被误判。
+ */
+export declare function extractThreadName(text: string): string | null;
 /**
  * 对方说了收尾的话（"先这样""不玩了""睡了"）：这一局到此为止。
  * 不靠模型判断，只认配置里的几个说法——判错了也只是少挂一局，不会丢记忆。

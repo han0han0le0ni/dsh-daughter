@@ -33,6 +33,11 @@ export declare function pickAssociationSeed(candidates: EventRecord[], currentEm
  *   记忆网里更"中心"，分数应当更高，而不是被 visited 直接丢弃。
  */
 export declare function associateEvents(seedIds: string[], candidates: EventRecord[], maxDepth: number, maxInjected: number, hopDecay: number): AssociationHit[];
+/**
+ * 概率联想条目的 reason。调用方据此把它排除出「真实召回」：
+ * 随机抽中的事件不能写 recallCount / weight，否则会被忘却扫描当成「被想起过」永久保活。
+ */
+export declare const SURPRISE_REASON = "\u968F\u673A\u8054\u60F3\uFF08\u53EF\u590D\u73B0\uFF09";
 /** 概率联想：从最近 30 天的非归档事件中随机挑 1 条，同种子可复现 */
 export declare function applySurprise(hits: RetrievalHit[], candidates: EventRecord[], config: DaughterConfig, rng: () => number, now: string): RetrievalHit[];
 /**

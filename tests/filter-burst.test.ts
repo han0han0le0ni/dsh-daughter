@@ -71,11 +71,16 @@ test('同源爆发：对话来源不受配额限制', () => {
 test('同源爆发：窗口之外的不计入配额', () => {
   const config = makeConfig();
   const recent = [
-    makeEvent('OLD-1', 'douyin_content', '2026-11-06T07:00:00.000Z'),
-    makeEvent('OLD-2', 'douyin_content', '2026-11-06T06:00:00.000Z'),
-    makeEvent('OLD-3', 'douyin_content', '2026-11-06T05:00:00.000Z'),
+    makeEvent('OLD-1', 'douyin_content', '2026-11-06T07:00:00.000Z', '刷到阿猫的视频'),
+    makeEvent('OLD-2', 'douyin_content', '2026-11-06T06:00:00.000Z', '刷到阿狗的视频'),
+    makeEvent('OLD-3', 'douyin_content', '2026-11-06T05:00:00.000Z', '刷到阿鸟的视频'),
   ];
-  const decision = decideIngest(makeEvent('NEW-1', 'douyin_content', NOW), recent, config, NOW);
+  const decision = decideIngest(
+    makeEvent('NEW-1', 'douyin_content', NOW, '刷到阿鱼的视频'),
+    recent,
+    config,
+    NOW,
+  );
 
   assert.equal(decision.action, 'keep', '五小时前的三条不该把现在的这条顶掉');
 });

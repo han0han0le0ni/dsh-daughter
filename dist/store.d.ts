@@ -83,6 +83,11 @@ export declare class Store {
     listRecentEvents(since: string, limit?: number): EventRecord[];
     updateEventMutable(id: string, patch: Partial<Pick<EventRecord, 'weight' | 'lastRecalledAt' | 'recallCount' | 'archived' | 'links' | 'salience' | 'mergedCount'>>): void;
     /**
+     * 回填专用：只改 thread_id。
+     * 不走 updateEventMutable，免得顺手改写权重/召回计数——回填不是一次召回。
+     */
+    setEventThreadId(id: string, threadId: string): void;
+    /**
      * 衰减/归档专用的轻量写：只动 weight 与 archived，不读整行、不读回看记录。
      * 维护轮次要对全库每个事件跑一遍，走 updateEventMutable 每次都会多查一次
      * emotion_history，事件上万条时这一项就是纯浪费。

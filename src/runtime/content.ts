@@ -417,6 +417,26 @@ export function buildCrossWindowDigest(
   return `${header}\n${lines.join('\n')}`;
 }
 
+const CONVERSATION_SOURCES = new Set(['chat', 'qq', 'douyin_dm']);
+
+/**
+ * 这条记忆有没有「具体原话」：
+ * 2 = 用户参与的对话、标题是完整一句话（下次能直接接上）；
+ * 1 = 用户没参与但有具体叙述；
+ * 0 = 模板化的闲聊/刷视频条目，没原话、也接不上，不该占相关记忆的位置。
+ */
+export function quotePriority(event: EventRecord): 0 | 1 | 2 {
+  const title = event.title.trim();
+  const readable = (title.match(/[\p{L}\p{N}]/gu) ?? []).length;
+  const templated =
+    /^(?:刷抖音刷到|刷到一条|窗口|切换到|看到我刚刚)/u.test(title) ||
+    title.includes('的视频：@') ||
+    readable < 2;
+  if (templated) return 0;
+  if (event.participants.includes('user') && CONVERSATION_SOURCES.has(event.source)) return 2;
+  return 1;
+}
+
 /**
  * "局"前情摘要：把同一局跨窗口、跨轮的几条事件合成一行，让两个窗口看到的是同一局，
  * 而不是各捡一条残迹。只给结构（几轮、跨几个窗口、最后一句原话）与开合状态，
@@ -427,6 +447,7 @@ export function buildThreadDigest(
   now?: string,
   currentSessionId?: string,
   namer: WindowNamer = windowName,
+  headingSource: 'first' | 'recent' | 'none' = 'first',
 ): string {
   if (heads.length === 0) return '';
   const lines = heads.map((head) => {
@@ -446,7 +467,16 @@ export function buildThreadDigest(
       : '';
     const at = last && now ? formatTimestamp(last.at, now) : '';
     const tail = said ? `最后一句 ${[where, at].filter(Boolean).join(' ')}：「${said}」` : '';
-    return `- ${head.label}｜${meta}${tail ? `；${tail}` : ''}`;
+    // 标题是给「三天后回来的人」看的：最近一句往往是「好诚实啊」这种回话，
+    // 拿它当标题完全看不出这局在聊什么。默认回到开局那句（或用户自己起的名字），
+    // 也可以干脆不自动起名，只留时间、轮次与最后一句原话。
+    const heading =
+      headingSource === 'none'
+        ? ''
+        : headingSource === 'recent'
+          ? truncate(head.recentTitle, 20)
+          : head.label;
+    return `- ${heading ? `${heading}｜` : ''}${meta}${tail ? `；${tail}` : ''}`;
   });
   const header = currentSessionId ? `[进行中的局]（这边是「${namer(currentSessionId)}」）` : '[进行中的局]';
   return `${header}\n${lines.join('\n')}`;
@@ -471,6 +501,18 @@ export const NO_MEMORY_CONSTRAINT = [
   '当前没有任何与用户相关的共同经历记录。',
   '禁止编造“上次你说过”“我们之前”等具体往事。',
   '你可以表达性格与当前状态，但不得声称记得未记录的事。',
+].join('\n');
+
+/**
+ * 库里有记忆、但这一轮没检索到相关内容时的约束。
+ * 不能沿用 NO_MEMORY_CONSTRAINT：那句「没有任何共同经历记录」在非空库里是假的，
+ * 会把模型推向「否认已有往事」。这里只说本轮没命中，仍然禁止编造具体往事。
+ */
+export const NO_MATCH_CONSTRAINT = [
+  '[无命中约束]',
+  '本轮没有检索到与当前话题相关的记忆。',
+  '禁止编造“上次你说过”“我们之前”等具体往事。',
+  '你可以表达性格与当前状态，但不得声称记得未检索到的事。',
 ].join('\n');
 
 export function buildBlocks(input: {

@@ -32,8 +32,10 @@ export interface ThreadTurn {
 /** 一个 thread 的头部索引，只存最近几轮，够注入"前情"即可 */
 export interface ThreadHead {
   id: string;
-  /** 一局的名称：取开局事件标题 */
+  /** 一局的名称：默认取开局事件标题，也可由用户说「这局叫 X」手动命名 */
   label: string;
+  /** 名字是用户起的，不是自动截出来的 */
+  labelByUser?: boolean;
   startedAt: string;
   lastTurnAt: string;
   turnCount: number;
@@ -51,9 +53,26 @@ export interface ThreadHead {
 
 const DIALOGUE_SOURCES = new Set(['chat', 'qq', 'douyin_dm']);
 
+/** 没有 session_id 的存量事件共用这一格：它们没法按窗口分开，只能按时间连 */
+const LEGACY_WINDOW = '__legacy__';
+
 /** 只有对话类来源才算"局"：刷到的视频（douyin_content）不该进来开一局 */
 export function isDialogueSource(source: EventRecord['source']): boolean {
   return DIALOGUE_SOURCES.has(source);
+}
+
+/**
+ * 用户自己起局名：「这局叫 X」「给这局起名 X」「把这局改成 Y」。
+ * 只认明确的命名句式；「这局聊什么」「这局是不是该收了」不会被误判。
+ */
+export function extractThreadName(text: string): string | null {
+  if (!text) return null;
+  const match =
+    /(?:这局|这一局|这个局|当前这局)(?:的名字)?(?:叫做|叫作|叫|改成|改为|命名为|名字是|起名(?:叫|为)?|取名(?:叫|为)?)\s*[：:]?\s*[「『"'《]?([^」』"'》\s，,。.！!？?；;：:]{1,20})[」』"'》]?/u.exec(
+      text,
+    );
+  const name = match?.[1]?.trim();
+  return name ? truncate(name, 20) : null;
 }
 
 /** 口语里这些词天天出现，靠它们认局会认错，先抠掉再比 */
@@ -158,6 +177,20 @@ export function assignThread(
     .filter((candidate) => candidate.sim >= threading.similarity)
     .sort((a, b) => b.sim - a.sim);
 
+  // 同一个窗口里隔得很近的连续发言，不看话题也并成一局：
+  // "这一段在干什么"本来就是连续的，话题归并会把一句随口的话拆成一个空壳局。
+  // 老事件没有 session_id（那时还没盖戳）：它们同属"旧窗口"这一格，
+  // 仍然按时间间隔连成一段——否则回填出来全是单轮的碎片。
+  const sameWindowMinutes = threading.same_window_minutes ?? 0;
+  const windowKey = (sessionId?: string): string => sessionId ?? LEGACY_WINDOW;
+  const nearby =
+    sameWindowMinutes > 0
+      ? active
+          .filter((head) => windowKey(head.lastSessionId) === windowKey(event.sessionId))
+          .filter((head) => createdMs - Date.parse(head.lastTurnAt) <= sameWindowMinutes * 60_000)
+          .sort((a, b) => Date.parse(b.lastTurnAt) - Date.parse(a.lastTurnAt))[0]
+      : undefined;
+
   const entry: ThreadTurn = {
     at: event.createdAt,
     title: event.title,
@@ -167,8 +200,12 @@ export function assignThread(
   };
   const closing = isClosingUtterance(quote ?? event.title, config);
 
-  if (ranked.length > 0) {
-    const head = ranked[0]!.head;
+  // 用户自己起局名：这一轮仍然算进局里，但标题换成他给的名字
+  const named = quote ? extractThreadName(quote) : null;
+
+  const target = nearby ?? ranked[0]?.head;
+  if (target) {
+    const head = target;
     const crossed = Boolean(event.sessionId && head.lastSessionId && event.sessionId !== head.lastSessionId);
     const next: ThreadHead = {
       ...head,
@@ -179,6 +216,10 @@ export function assignThread(
       recentTitle: event.title,
       recentEvents: [...head.recentEvents, entry].slice(-threading.max_summary_turns),
     };
+    if (named) {
+      next.label = named;
+      next.labelByUser = true;
+    }
     if (closing) {
       next.status = 'closed';
       next.closedAt = event.createdAt;
@@ -191,7 +232,8 @@ export function assignThread(
   const stamp = event.createdAt.replace(/\D/g, '').slice(0, 14);
   const head: ThreadHead = {
     id: `THR-${stamp}-${String(open.length + 1).padStart(2, '0')}`,
-    label: truncate(event.title, 20),
+    label: named ?? truncate(event.title, 20),
+    labelByUser: Boolean(named),
     startedAt: event.createdAt,
     lastTurnAt: event.createdAt,
     turnCount: 1,

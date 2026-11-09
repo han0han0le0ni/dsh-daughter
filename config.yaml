@@ -33,6 +33,10 @@ retrieval:
   # 命中事件若在全文层有更完整记录，就在摘要行后补一句摘录（§4.4）
   expand_fulltext: true
   fulltext_excerpt_chars: 120
+  # 相关记忆按「有没有具体原话」挑，不按话题标签：带用户原话的对话优先
+  prefer_quotes: true
+  # 每轮最多保留几条「用户没参与、又没有原话」的模板条目（刷视频/闲聊对答）
+  max_unquoted: 0
 
 association:
   max_depth: 2
@@ -58,6 +62,9 @@ threading:
   gap_minutes: 45
   # 标题 Dice 相似度门槛（0–1），达到才算同一局
   similarity: 0.25
+  # 同一个窗口里，隔多久以内的连续发言并成一局（分钟）：不看话题，
+  # 因为"这一段在干什么"本来就是连续的；换成别的窗口才另起一局。0 = 关
+  same_window_minutes: 10
   # 一局多久没动静就算结束（分钟）。超过这个时长就算"已结束（一直没动静）"，
   # 不再当进行中的事往下推，但仍然留在寄存器里当落脚处
   activity_ttl_minutes: 180
@@ -81,6 +88,9 @@ threading:
   max_summary_turns: 4
   # 每轮最多注入几个"进行中的局"
   max_injected: 2
+  # 局名取哪句：first = 开局那句 / recent = 最近一句 / none = 不自动起名
+  # 对话里说「这局叫 X」可随时手动命名，命名后标题就是这个名字
+  heading_source: first
 
 skills:
   max_main: 1
@@ -266,6 +276,9 @@ filter:
   # 习惯化：同源同题（数字归一化后）在窗口内重复，只累加计数不新增条目
   habituation:
     window_minutes: 30
+    # 几乎逐字相同的重复（同一段视频隔几小时又刷到）用更长的窗口：
+    # 30 分钟窗拦不住，真实库里四分之一的事件是同一条记忆的拷贝
+    identical_window_minutes: 1440
     max_repeat: 3
   # 同源爆发抑制：外部来源在窗口内最多留几条，超出即丢弃。
   # 习惯化只认"内容很像"，而抖音这种模板相同、条目不同的输入躲得过去，会一条条写满事件库。
@@ -281,6 +294,11 @@ filter:
     enabled: true
     idle_days: 30
     min_salience: 0.2
+  # 入库前内容完整性筛：半截 DSML/工具标记、没有实际内容的条目直接丢
+  content_guard:
+    enabled: true
+    min_content_chars: 2
+    patterns: ['</', '｜｜', 'DSML', 'invoke>', 'calls>', '<|', '|＞']
 
 decay:
   weight_decay_rate: 0.02

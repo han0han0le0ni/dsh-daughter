@@ -56,6 +56,7 @@
     "filter:sweep": "node --import tsx scripts/filter-sweep.ts",
     "reset": "node --import tsx scripts/reset.ts",
     "memory:doctor": "node --import tsx scripts/memory-doctor.ts",
+    "threads:backfill": "node --import tsx scripts/threads-backfill.ts",
     "connector:token": "node bin/connector-token.mjs"
   },
   "dependencies": {

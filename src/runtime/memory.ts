@@ -82,41 +82,47 @@ export function retrieveEvents(args: RetrieveArgs): RetrievalHit[] {
     };
   });
 
-  scored.sort((a, b) => b.semantic * w.semantic + b.weight * w.weight - (a.semantic * w.semantic + a.weight * w.weight));
+  const sourceMultiplier = (event: EventRecord): number =>
+    config.filter.enabled ? sourceWeightOf(event.source, config) : 1;
 
-  const top = scored[0];
-  if (top) {
-    const topId = top.event.id;
-    for (const item of scored) {
-      if (item.event.id === topId) continue;
-      if (item.event.links.some((link) => link.targetId === topId)) item.linkProximity = 0.6;
-      else if (
-        item.event.links.some((link) =>
-          top.event.links.some((direct) => direct.targetId === link.targetId),
-        )
-      ) {
-        item.linkProximity = 0.3;
-      }
-    }
-  }
-
+  // 基础分先不含链接邻近度：门禁必须过在「没有邻近度加持」的原始分上
   for (const item of scored) {
     const raw =
       w.semantic * item.semantic +
       w.recency * item.recency +
       w.weight * item.weight +
-      w.emotion_match * item.emotionMatch +
-      w.link_proximity * item.linkProximity;
+      w.emotion_match * item.emotionMatch;
     // 认知滤网：低可信来源整体降权（窗口标题这类系统事件不该挤掉真人对话）
-    item.score = raw * (config.filter.enabled ? sourceWeightOf(item.event.source, config) : 1);
+    item.score = raw * sourceMultiplier(item.event);
   }
 
   // 命中才叫相关记忆：语义为 0 的候选只是"最近、最重、情绪最像"，
   // 每次都把它塞进相关记忆，联想通道就永远没有位置。
   // 一条都没命中时不在这里硬凑，交给 pickAssociationSeed 从记忆网里挑种子，
   // 由联想块（低优先级、限深限条）把内容带出来。
-  return scored
-    .filter((item) => item.semantic >= config.retrieval.min_semantic && item.score >= config.retrieval.min_score)
+  const eligible = scored.filter(
+    (item) => item.semantic >= config.retrieval.min_semantic && item.score >= config.retrieval.min_score,
+  );
+  if (eligible.length === 0) return [];
+
+  // 链接邻近度只由「已命中」的事件决定：锚点取门禁后基础分最高的那条。
+  // 早期实现锚在按 semantic+weight 排序的全部候选首条，那条可能随后被门禁挡掉，
+  // 于是一条根本没注入的记忆也能给其它候选加 0.10 权重。
+  const anchor = eligible.reduce((best, item) => (item.score > best.score ? item : best), eligible[0]!);
+  for (const item of eligible) {
+    if (item.event.id === anchor.event.id) continue;
+    if (item.event.links.some((link) => link.targetId === anchor.event.id)) item.linkProximity = 0.6;
+    else if (
+      anchor.event.links.some((direct) =>
+        item.event.links.some((link) => link.targetId === direct.targetId),
+      )
+    ) {
+      item.linkProximity = 0.3;
+    }
+    item.score += w.link_proximity * item.linkProximity * sourceMultiplier(item.event);
+  }
+
+  return eligible
     .sort((a, b) => b.score - a.score)
     .slice(0, topK)
     .map((item) => ({
@@ -220,6 +226,12 @@ export function associateEvents(
   return [...found.values()].sort((a, b) => b.score - a.score || a.depth! - b.depth!).slice(0, maxInjected);
 }
 
+/**
+ * 概率联想条目的 reason。调用方据此把它排除出「真实召回」：
+ * 随机抽中的事件不能写 recallCount / weight，否则会被忘却扫描当成「被想起过」永久保活。
+ */
+export const SURPRISE_REASON = '随机联想（可复现）';
+
 /** 概率联想：从最近 30 天的非归档事件中随机挑 1 条，同种子可复现 */
 export function applySurprise(
   hits: RetrievalHit[],
@@ -239,7 +251,7 @@ export function applySurprise(
   const picked = recent[Math.floor(rng() * recent.length)]!;
   return [
     ...hits,
-    { event: picked, score: 0.05, reason: '随机联想（可复现）' },
+    { event: picked, score: 0.05, reason: SURPRISE_REASON },
   ].sort((a, b) => b.score - a.score).slice(0, config.retrieval.top_k + 1);
 }
 

@@ -5,13 +5,13 @@ import { Observability } from './runtime/observability.js';
 import { createRng, relativeTime, safeFileName, silentLogger, truncate } from './util.js';
 import { applyBodySignal, pickMotionByPad } from './runtime/body-link.js';
 import { decideIngest } from './runtime/filter.js';
-import { carryL5, createInitialL5, selectSubpersona, updateL5 } from './runtime/state.js';
+import { carryL5, createInitialL5, selectSubpersona, sentimentPolarity, updateL5 } from './runtime/state.js';
 import { assignThread, isDialogueSource, pruneOpenThreads } from './runtime/threading.js';
 import { evaluateSpeak, localDayKey } from './runtime/speak.js';
 import { readForeground } from './runtime/desktop-observe.js';
 import { containsDiagnosisLabel, evaluateSafety } from './runtime/safety.js';
-import { applySurprise, associateEvents, extractEvent, linkNewEvent, pickAssociationSeed, recallDrift, reconstructOnRecall, retrieveEvents, } from './runtime/memory.js';
-import { NO_MEMORY_CONSTRAINT, activateSkills, buildBlocks, buildCrossWindowDigest, buildEventDigest, buildPersonaText, buildThreadDigest, buildRelationText, buildSkillDigest, buildStateHint, clipBlocks, matchReflex, WORKING_STYLE, } from './runtime/content.js';
+import { SURPRISE_REASON, applySurprise, associateEvents, extractEvent, linkNewEvent, pickAssociationSeed, recallDrift, reconstructOnRecall, retrieveEvents, } from './runtime/memory.js';
+import { NO_MATCH_CONSTRAINT, NO_MEMORY_CONSTRAINT, activateSkills, buildBlocks, buildCrossWindowDigest, buildEventDigest, buildPersonaText, buildThreadDigest, buildRelationText, buildSkillDigest, buildStateHint, clipBlocks, matchReflex, quotePriority, WORKING_STYLE, } from './runtime/content.js';
 import { applyPersonalitySignal } from './runtime/personality.js';
 import { applyPersonaDrift, buildPersonProfiles, buildStarMap, buildThingProfiles, bumpSkill, learnDraftSkill, maybeFreezeSkill, runTick, } from './runtime/maintenance.js';
 /** §6.1 时延预算：超时只告警与记日志，不做硬中断（SQLite 同步查询无法中途取消） */
@@ -197,7 +197,9 @@ class Daughter {
             .map((hit) => ({ hit, event: candidateById.get(hit.eventId) }))
             .filter((item) => Boolean(item.event))
             // §10.1 档位 ≥2 的注入只保留情绪中性的引用
-            .filter((item) => verdict.level < 2 || Math.abs(item.event.emotionAtTime.pleasure) <= 0.2);
+            .filter((item) => verdict.level < 2 || Math.abs(item.event.emotionAtTime.pleasure) <= 0.2)
+            // 联想块也不收「用户没参与、又没有原话」的模板条目（刷视频、闲聊对答）
+            .filter((item) => this.config.retrieval.prefer_quotes === false || quotePriority(item.event) > 0);
         // §10.1 降级收紧主动联想：档位 1 砍半，档位 2 起整个联想块不再注入
         const associationLimit = verdict.level >= 2 ? 0 : verdict.level >= 1 ? Math.ceil(associatedViews.length / 2) : associatedViews.length;
         // 联想块保留内容而不是只给 eventId：事件块可能被预算裁掉，联想块是它被裁后的备份；
@@ -228,15 +230,32 @@ class Daughter {
             reason: `联想（${hit.via.kind}，${hit.depth ?? 1} 跳）`,
         }));
         const injectedHits = [...digestHits, ...associationDigest];
-        // 续接条目不算命中：不进 promptCache.hits，也就不写 recallCount / weight，
+        // 选条目按「有没有原话」，不按话题标签：带具体原话、用户参与过的对话优先，
+        // 模板化的刷视频/闲聊对答最多留 max_unquoted 条（默认 0），不再占着开头的位置。
+        const maxUnquoted = Math.max(0, Math.round(this.config.retrieval.max_unquoted ?? 0));
+        let unquotedLeft = maxUnquoted;
+        const orderedHits = this.config.retrieval.prefer_quotes === false
+            ? injectedHits
+            : injectedHits
+                .filter((hit) => {
+                if (quotePriority(hit.event) > 0)
+                    return true;
+                if (unquotedLeft > 0) {
+                    unquotedLeft -= 1;
+                    return true;
+                }
+                return false;
+            })
+                .sort((a, b) => quotePriority(b.event) - quotePriority(a.event));
+        // 续接条目不算召回强化：不进 promptCache.hits，也就不写 recallCount / weight，
         // 否则每开一个新窗口它都被强化一次，最后永远排在最前面。
-        const memoryHit = withSurprise.length > 0 || associationDigest.length > 0;
+        // 但它确实是注入内容，memoryHit 与约束判定统一在 openThreads 之后按「注入了什么」计算。
         // 跨窗口不进事件块：单独一块，独立预算，不受当前话题检索与预算裁剪影响
         // 同一条只贴一个地方：跨窗口块已经给过的内容，事件块不再重复贴一遍；
         // 事件块内部也按内容去重（同一个视频刷到五次，也只占一行）
         const crossKeys = new Set(crossWindow.map((hit) => contentKey(hit.event)));
         const seenContent = new Set();
-        const injected = [...injectedHits, ...continued].filter((hit) => {
+        const injected = [...orderedHits, ...continued].filter((hit) => {
             const key = contentKey(hit.event);
             if (crossKeys.has(key) || seenContent.has(key))
                 return false;
@@ -259,7 +278,10 @@ class Daughter {
         const closedHead = prunedThreads.find((head) => head.status === 'closed');
         const openThreads = closedHead ? [...openHeads, closedHead] : openHeads;
         // 带上本窗口的名字与 id：局的最后一句要标清"这儿/别处"，不然自己的话会被当成对方的
-        const threadText = buildThreadDigest(openThreads, now, ctx.sessionId, namer);
+        const threadText = buildThreadDigest(openThreads, now, ctx.sessionId, namer, this.config.threading.heading_source ?? 'first');
+        // 与注入内容同口径：续接 / 跨窗口 / 局都算「有记忆可看」，只是不算召回强化
+        const hasInjectedMemory = injected.length > 0 || crossWindow.length > 0 || openThreads.length > 0;
+        const memoryHit = hasInjectedMemory;
         const { blocks, usedTokens } = buildBlocks({
             personaText: [buildPersonaText(persona, sub), relationText, WORKING_STYLE].filter(Boolean).join('\n'),
             stateHint: buildStateHint(l5, verdict),
@@ -268,15 +290,20 @@ class Daughter {
             threadText,
             skillDigest: buildSkillDigest(activation),
             associationText,
-            // 有内容就不能说"没有任何记录"：续接/跨窗口不算命中，但块里确实列了往事
-            constraint: injected.length > 0 || crossWindow.length > 0 || openThreads.length > 0 ? null : NO_MEMORY_CONSTRAINT,
+            // 只有空库才说「没有任何记录」；库非空但本轮零命中时只说「没检索到」，不撒谎
+            constraint: hasInjectedMemory
+                ? null
+                : store.listCandidates(false, 1).length > 0
+                    ? NO_MATCH_CONSTRAINT
+                    : NO_MEMORY_CONSTRAINT,
             config: this.config,
         });
         const budget = Math.min(input.tokenBudget, this.config.budget.max_total_tokens);
         const clipped = usedTokens > budget ? clipBlocks(blocks, budget) : { blocks, usedTokens };
         this.promptCache.set(sessionKey(ctx), {
             sessionId: ctx.sessionId,
-            hits: withSurprise,
+            // 随机联想只是「额外看一条」，不是真的被想起：不写 recallCount / weight，也不参与重构
+            hits: withSurprise.filter((hit) => hit.reason !== SURPRISE_REASON),
             activation,
             mainSkillId: activation.main?.id,
         });
@@ -401,7 +428,7 @@ class Daughter {
             skillsUpdated.push(learned.skill.id);
             evolutionIds.push(learned.evolutionId);
         }
-        const drift = applyPersonaDrift(store, this.config, persona, sentimentOf(userText), now);
+        const drift = applyPersonaDrift(store, this.config, persona, sentimentPolarity(userText), now);
         if (drift.changed && drift.evolutionId)
             evolutionIds.push(drift.evolutionId);
         // 性格演化：只有「累积 / 关键」事件才动 L1–L3，日常闲聊交给 L5（写实口径）
@@ -797,7 +824,15 @@ class Daughter {
      * 判据全部在 runtime/filter.ts，这里只负责落地。
      */
     ingest(store, event, fullText) {
-        const decision = decideIngest(event, store.listCandidates(false, 80), this.config, event.createdAt);
+        // 滤网要的是「最近」而不是「权重最高」：listCandidates 按 weight DESC 排序，
+        // 事件一多，高权重旧事会把刚发生的新事件挤出去，爆发抑制、同题合并与新颖性一起漏判。
+        // 回溯窗口取三个判据里最长的一个，覆盖所有需要比对的历史。
+        const windowMinutes = Math.max(this.config.filter.habituation.window_minutes, this.config.filter.habituation.identical_window_minutes, this.config.filter.burst.window_minutes);
+        const createdMs = Date.parse(event.createdAt);
+        const since = Number.isFinite(createdMs)
+            ? new Date(Math.max(0, createdMs - windowMinutes * 60_000)).toISOString()
+            : new Date(0).toISOString();
+        const decision = decideIngest(event, store.listRecentEvents(since, 80), this.config, event.createdAt);
         event.salience = decision.salience;
         if (decision.action === 'keep') {
             store.addEvent(event, fullText);
@@ -816,6 +851,8 @@ class Daughter {
             store.bumpCounter('filter.keep');
             return { eventId: event.id, action: 'keep' };
         }
+        if (decision.reason.startsWith('内容筛：'))
+            store.bumpCounter('filter.invalid');
         store.bumpCounter(decision.action === 'shield' ? 'filter.shield' : 'filter.drop');
         this.logger.debug('dsh-daughter: 认知滤网拦截', {
             action: decision.action,
@@ -1037,11 +1074,6 @@ class Daughter {
 }
 function sessionKey(ctx) {
     return `${ctx.characterId}::${ctx.sessionId}`;
-}
-function sentimentOf(text) {
-    const positive = ['好', '喜欢', '开心', '谢谢', '顺利'].filter((word) => text.includes(word)).length;
-    const negative = ['烦', '累', '难过', '压力', '失望'].filter((word) => text.includes(word)).length;
-    return positive === 0 && negative === 0 ? 0 : (positive - negative) / (positive + negative);
 }
 function round(value) {
     return Math.round(value * 100) / 100;

@@ -142,16 +142,27 @@ test('数字归一化：好感度涨到不同数值视为同题', () => {
   assert.equal(decision.action, 'merge');
 });
 
-test('窗口外不合并', () => {
+test('同一条的合并窗口：五小时内的照并，跨天的不并', () => {
   const config = makeConfig();
-  const old = makeEvent({ source: 'game', createdAt: '2026-11-05T06:00:00.000Z' });
-  const decision = decideIngest(
+  // 真实库的毛病：同一段视频隔两三个小时又刷到，30 分钟窗拦不住，一条记成五份
+  const fiveHoursAgo = makeEvent({ source: 'game', createdAt: '2026-11-05T05:00:00.000Z' });
+  const near = decideIngest(
     makeEvent({ source: 'game', createdAt: '2026-11-05T10:00:00.000Z' }),
-    [old],
+    [fiveHoursAgo],
     config,
     '2026-11-05T10:00:00.000Z',
   );
-  assert.notEqual(decision.action, 'merge');
+  assert.equal(near.action, 'merge', '五小时后同一条仍算重复');
+
+  // 跨天的同一条不再合并：那已经是"又看了一遍"，该留新的一条
+  const twoDaysAgo = makeEvent({ source: 'game', createdAt: '2026-11-03T06:00:00.000Z' });
+  const far = decideIngest(
+    makeEvent({ source: 'game', createdAt: '2026-11-05T10:00:00.000Z' }),
+    [twoDaysAgo],
+    config,
+    '2026-11-05T10:00:00.000Z',
+  );
+  assert.notEqual(far.action, 'merge');
 });
 
 test('真人对话永远不会因显著性低被丢弃', () => {

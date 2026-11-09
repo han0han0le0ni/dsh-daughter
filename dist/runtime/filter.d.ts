@@ -28,6 +28,12 @@ export interface FilterDecision {
 export type FilterStatKind = 'keep' | 'merge' | 'drop' | 'shield';
 export declare function sourceWeightOf(source: string, config: DaughterConfig): number;
 /**
+ * 入库前的内容完整性筛：不是完整的话、带半截工具/模板标记的，直接丢。
+ * 真实库里出现过「看到我刚刚在其他工作区的提问了吗 → </｜｜DSML｜｜ invoke>」这种条目，
+ * 既占着相关记忆的开头，又没法被接上。
+ */
+export declare function contentGuardReason(event: EventRecord, config: DaughterConfig): string | null;
+/**
  * 事件签名：数字与数量单位一起归一化，
  * 避免"好感度涨到 58410547"和"涨到 5.8 万亿""涨到 1.2 亿"被当成三件事。
  */

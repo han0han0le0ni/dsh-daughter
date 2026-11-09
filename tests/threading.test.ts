@@ -79,9 +79,9 @@ test('assignThread：时间相邻 + 话题相似归同一局，否则开新局',
   assert.equal(second.heads[0]!.windowCount, 2, '跨了窗口要记下来');
   assert.equal(second.threadId, first.heads[0]!.id);
 
-  // 无关话题 → 新局
+  // 另一个窗口、无关话题 → 新局（同一窗口里连着说的话归下一局的规则，见后面那条用例）
   const other = assignThread(
-    makeEvent('e3', '今天天气不错', '2026-11-07T10:06:00.000Z', 'w2'),
+    makeEvent('e3', '今天天气不错', '2026-11-07T10:06:00.000Z', 'w9'),
     second.heads,
     config,
   );
@@ -94,6 +94,39 @@ test('assignThread：时间相邻 + 话题相似归同一局，否则开新局',
     config,
   );
   assert.equal(stale.heads.length, 3, '超过间隔就该是另一局');
+});
+
+test('同一窗口里连着说的话算一局：换话题也不拆', () => {
+  const config = makeConfig();
+  const first = assignThread(makeEvent('e1', '今天好累', '2026-11-07T10:00:00.000Z', 'w1'), [], config);
+  const second = assignThread(
+    makeEvent('e2', '晚饭吃什么', '2026-11-07T10:03:00.000Z', 'w1'),
+    first.heads,
+    config,
+  );
+  assert.equal(second.heads.length, 1, '同窗口三分钟内换话题不该另开一局');
+  assert.equal(second.heads[0]!.turnCount, 2);
+
+  // 隔了一个半小时、又是另一个窗口：这才算另起一段
+  const third = assignThread(
+    makeEvent('e3', '今天好累', '2026-11-07T11:30:00.000Z', 'w2'),
+    second.heads,
+    config,
+  );
+  assert.equal(third.heads.length, 2);
+
+  // 标题是给三天后回来的人看的：最近一句常是「好诚实啊」这种回话，
+  // 拿它当标题看不出这局在聊什么，默认回到开局那句（或用户自己起的名字）
+  const long = assignThread(
+    makeEvent('e4', '那我们明天吃火锅', '2026-11-07T10:05:00.000Z', 'w1'),
+    [...second.heads, ...third.heads.filter((head) => !second.heads.some((item) => item.id === head.id))],
+    config,
+  );
+  assert.equal(long.heads.length, 2);
+  const digest = buildThreadDigest(long.heads, '2026-11-07T10:05:00.000Z', 'w1');
+  assert.match(digest, /^- (?:玩捉迷藏|今天好累)｜/m, '长局标题仍用开局那句');
+  assert.doesNotMatch(digest, /^- 那我们明天吃火锅｜/m, '不拿最后一句回话当标题');
+  assert.match(digest, /3 轮/);
 });
 
 test('pruneOpenThreads：没动静的局到期即收尾，但还留着当落脚处', () => {

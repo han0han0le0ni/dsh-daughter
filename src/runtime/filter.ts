@@ -33,6 +33,8 @@ export type FilterStatKind = 'keep' | 'merge' | 'drop' | 'shield';
 
 const DEFAULT_SOURCE_WEIGHT = 1;
 const REGEX_CACHE = new Map<string, RegExp | null>();
+/** 到这个相似度就算"同一条"，用更长的去重窗口 */
+const IDENTICAL_SIMILARITY = 0.98;
 
 export function sourceWeightOf(source: string, config: DaughterConfig): number {
   const weights = config.filter.source_weights as Record<string, number>;
@@ -50,6 +52,39 @@ function compile(pattern: string): RegExp | null {
   }
   REGEX_CACHE.set(pattern, compiled);
   return compiled;
+}
+
+/** 去掉标记、标点、空白后还剩几个可读字符（中文/字母/数字） */
+function readableChars(text: string): number {
+  return (text.match(/[\p{L}\p{N}]/gu) ?? []).length;
+}
+
+/**
+ * 入库前的内容完整性筛：不是完整的话、带半截工具/模板标记的，直接丢。
+ * 真实库里出现过「看到我刚刚在其他工作区的提问了吗 → </｜｜DSML｜｜ invoke>」这种条目，
+ * 既占着相关记忆的开头，又没法被接上。
+ */
+export function contentGuardReason(event: EventRecord, config: DaughterConfig): string | null {
+  const guard = config.filter.content_guard;
+  if (!guard || guard.enabled === false) return null;
+  const patterns = Array.isArray(guard.patterns)
+    ? guard.patterns.filter((pattern): pattern is string => typeof pattern === 'string' && pattern.length > 0)
+    : [];
+  const min = Number.isFinite(guard.min_content_chars) ? Math.max(1, guard.min_content_chars) : 2;
+
+  for (const part of [event.title, event.summary]) {
+    const hit = patterns.find((pattern) => part.includes(pattern));
+    if (hit) return `内容含模板/工具标记残留「${hit}」，不是完整的话`;
+  }
+
+  // 一问一答的条目：回复那一半若是半截标记，整条都不该入库
+  const arrow = event.summary.indexOf(' → ');
+  if (arrow >= 0) {
+    const reply = event.summary.slice(arrow + 3).trim();
+    if (reply && readableChars(reply) < min) return '回复没有实际内容';
+  }
+  if (readableChars(`${event.title} ${event.summary}`) < min) return '整条没有实际内容';
+  return null;
 }
 
 /**
@@ -128,6 +163,10 @@ export function decideIngest(
   const shield = shieldReason(event, config);
   if (shield) return { action: 'shield', reason: shield, ...base };
 
+  // 内容不完整/半截模板：连占用爆发抑制与同题合并的配额都不该给
+  const invalid = contentGuardReason(event, config);
+  if (invalid) return { action: 'drop', reason: `内容筛：${invalid}`, ...base };
+
   const habituation = config.filter.habituation;
   const windowMs = Math.max(1, habituation.window_minutes) * 60_000;
   const nowMs = Date.parse(now);
@@ -154,11 +193,15 @@ export function decideIngest(
     }
   }
 
+  // 几乎逐字相同的重复给更长的窗口：同一段视频隔两小时又刷到，30 分钟窗拦不住，
+  // 真实库里四分之一的事件是这种拷贝。真像的那条留一次计数，多的连计数都不再涨。
+  const identicalMs = Math.max(windowMs, Math.max(1, habituation.identical_window_minutes) * 60_000);
   let duplicate: { event: EventRecord; similarity: number } | null = null;
   for (const other of recent) {
     if (other.source !== event.source) continue;
-    if (Math.abs(nowMs - Date.parse(other.createdAt)) > windowMs) continue;
     const similarity = diceSimilarity(eventSignature(event), eventSignature(other));
+    const window = similarity >= IDENTICAL_SIMILARITY ? identicalMs : windowMs;
+    if (Math.abs(nowMs - Date.parse(other.createdAt)) > window) continue;
     if (!duplicate || similarity > duplicate.similarity) duplicate = { event: other, similarity };
   }
 

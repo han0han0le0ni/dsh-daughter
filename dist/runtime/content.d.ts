@@ -57,13 +57,26 @@ namer?: WindowNamer): string;
  */
 export declare function buildCrossWindowDigest(hits: RetrievalHit[], now?: string, currentSessionId?: string, namer?: WindowNamer): string;
 /**
+ * 这条记忆有没有「具体原话」：
+ * 2 = 用户参与的对话、标题是完整一句话（下次能直接接上）；
+ * 1 = 用户没参与但有具体叙述；
+ * 0 = 模板化的闲聊/刷视频条目，没原话、也接不上，不该占相关记忆的位置。
+ */
+export declare function quotePriority(event: EventRecord): 0 | 1 | 2;
+/**
  * "局"前情摘要：把同一局跨窗口、跨轮的几条事件合成一行，让两个窗口看到的是同一局，
  * 而不是各捡一条残迹。只给结构（几轮、跨几个窗口、最后一句原话）与开合状态，
  * 不塞整局全文——"卡在我看不见，等她给线索"这种原话才是下次能接上的地方。
  */
-export declare function buildThreadDigest(heads: ThreadHead[], now?: string, currentSessionId?: string, namer?: WindowNamer): string;
+export declare function buildThreadDigest(heads: ThreadHead[], now?: string, currentSessionId?: string, namer?: WindowNamer, headingSource?: 'first' | 'recent' | 'none'): string;
 export declare function buildSkillDigest(activation: SkillActivation): string;
 export declare const NO_MEMORY_CONSTRAINT: string;
+/**
+ * 库里有记忆、但这一轮没检索到相关内容时的约束。
+ * 不能沿用 NO_MEMORY_CONSTRAINT：那句「没有任何共同经历记录」在非空库里是假的，
+ * 会把模型推向「否认已有往事」。这里只说本轮没命中，仍然禁止编造具体往事。
+ */
+export declare const NO_MATCH_CONSTRAINT: string;
 export declare function buildBlocks(input: {
     personaText: string;
     stateHint: string;

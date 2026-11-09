@@ -29,6 +29,8 @@ export const defaultConfig: DaughterConfig = {
     reconstruct_cooldown_minutes: 360,
     expand_fulltext: true,
     fulltext_excerpt_chars: 120,
+    prefer_quotes: true,
+    max_unquoted: 0,
   },
   association: {
     max_depth: 2,
@@ -45,6 +47,7 @@ export const defaultConfig: DaughterConfig = {
     enabled: true,
     gap_minutes: 45,
     similarity: 0.25,
+    same_window_minutes: 10,
     activity_ttl_minutes: 180,
     closed_retention_minutes: 1440,
     closing_phrases: [
@@ -61,6 +64,7 @@ export const defaultConfig: DaughterConfig = {
     ],
     max_summary_turns: 4,
     max_injected: 2,
+    heading_source: 'first',
   },
   skills: {
     max_main: 1,
@@ -231,10 +235,15 @@ export const defaultConfig: DaughterConfig = {
       system: 0.4,
     },
     shield: { sources: [], keywords: [], patterns: [] },
-    habituation: { window_minutes: 30, max_repeat: 3 },
+    habituation: { window_minutes: 30, identical_window_minutes: 1440, max_repeat: 3 },
     burst: { window_minutes: 60, max_keep: 3, exempt_sources: ['chat', 'qq', 'douyin_dm'] },
     salience: { drop_below: 0.2 },
     forget: { enabled: true, idle_days: 30, min_salience: 0.2 },
+    content_guard: {
+      enabled: true,
+      min_content_chars: 2,
+      patterns: ['</', '｜｜', 'DSML', 'invoke>', 'calls>', '<|', '|＞'],
+    },
   },
   emotion_relax: {
     enabled: true,
@@ -340,6 +349,10 @@ function normalizeConfig(config: DaughterConfig): DaughterConfig {
   config.threading.enabled = config.threading.enabled !== false;
   config.threading.similarity = clampUnit(config.threading.similarity, 0.25);
   config.threading.gap_minutes = Math.max(1, Math.round(num(config.threading.gap_minutes, 45)));
+  config.threading.same_window_minutes = Math.min(
+    1440,
+    Math.max(0, Math.round(num(config.threading.same_window_minutes, 10))),
+  );
   config.threading.activity_ttl_minutes = Math.max(1, Math.round(num(config.threading.activity_ttl_minutes, 180)));
   config.threading.closed_retention_minutes = Math.max(
     1,
@@ -530,6 +543,10 @@ function normalizeConfig(config: DaughterConfig): DaughterConfig {
   config.evolution.l1_max_delta_per_write = Math.min(0.1, Math.max(0, num(config.evolution.l1_max_delta_per_write, 0.02)));
   const filter = config.filter;
   filter.habituation.window_minutes = Math.min(1440, Math.max(1, Math.round(num(filter.habituation.window_minutes, 30))));
+  filter.habituation.identical_window_minutes = Math.min(
+    10080,
+    Math.max(1, Math.round(num(filter.habituation.identical_window_minutes, 1440))),
+  );
   filter.habituation.max_repeat = Math.min(20, Math.max(1, Math.round(num(filter.habituation.max_repeat, 3))));
   filter.burst.window_minutes = Math.min(1440, Math.max(1, Math.round(num(filter.burst.window_minutes, 60))));
   filter.burst.max_keep = Math.min(20, Math.max(1, Math.round(num(filter.burst.max_keep, 3))));
