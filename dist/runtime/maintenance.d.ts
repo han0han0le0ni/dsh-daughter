@@ -1,6 +1,15 @@
 import type { AssetKind, DaughterConfig, PersonaBundle, SkillCard } from '../types.js';
 import type { Store } from '../store.js';
 import { type WeightedLabel } from './weights.js';
+/**
+ * 长边批量降权（DEF-15）：事件超过 link_idle_days 没被召回，说明它不再活跃；
+ * 与它相连的边每 24 小时批量降一次，低于门限摘掉。
+ * 不做逐边时间戳——为每条边存一个 lastActive 会把 links 的存储翻倍。
+ */
+export declare function decayStaleLinks(store: Store, config: DaughterConfig, now: string): {
+    decayed: number;
+    removed: number;
+};
 export declare function runTick(store: Store, config: DaughterConfig, now: string): {
     decayed: number;
     archived: number;
@@ -10,6 +19,9 @@ export declare function runTick(store: Store, config: DaughterConfig, now: strin
     evolved: string[];
     /** 本轮做了回落（向基线回归）的会话数 */
     relaxed: number;
+    /** 本轮批量降权的边数与摘掉的边数 */
+    linkDecayed: number;
+    linkRemoved: number;
 };
 /**
  * 情感回落：stress / fatigue / safety 与 PAD 一起向基线回归。

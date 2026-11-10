@@ -307,6 +307,12 @@ export class Store {
             .prepare('UPDATE events SET weight = ?, archived = ? WHERE id = ? AND character_id = ?')
             .run(weight, archived ? 1 : 0, id, this.characterId);
     }
+    /** 长边批量降权专用：只改 links，不重读整行与回看记录 */
+    updateEventLinks(id, links) {
+        this.db
+            .prepare('UPDATE events SET links = ? WHERE id = ? AND character_id = ?')
+            .run(JSON.stringify(links), id, this.characterId);
+    }
     /** 归档事件落盘到 archive/：完整记录留档，索引里只保留 archived 标记与薄字段 */
     archiveEvent(event) {
         this.writeLocked(join(this.paths.archive, `${safeFileName(event.id)}.json`), JSON.stringify(event, null, 2));
@@ -1140,6 +1146,65 @@ export class Store {
             threadId: row.thread_id ?? undefined,
             schemaVersion: 1,
         };
+    }
+    /**
+     * 回忆重构去重（DEF-07）：同一事件同一小时内只保留「位移最大」的一条。
+     * 位移 = 与该事件前一条回看记录的 PAD 距离；组内第一条与上一条（可能跨小时）比。
+     * apply=false 只统计不删除，供 filter:sweep 的 dry-run 使用。
+     */
+    dedupeEmotionHistory(apply = false) {
+        const rows = this.db
+            .prepare('SELECT id, event_id, at, pleasure, arousal, dominance FROM emotion_history ORDER BY event_id, at, id')
+            .all();
+        const hourKey = (at) => {
+            const ms = Date.parse(at);
+            return Number.isFinite(ms) ? String(Math.floor(ms / 3_600_000)) : at;
+        };
+        const groups = new Map();
+        for (const row of rows) {
+            const key = `${row.event_id}\u0000${hourKey(row.at)}`;
+            const bucket = groups.get(key);
+            if (bucket)
+                bucket.push(row);
+            else
+                groups.set(key, [row]);
+        }
+        let removed = 0;
+        const toDelete = [];
+        let previous;
+        for (const bucket of groups.values()) {
+            const first = bucket[0];
+            if (bucket.length === 1) {
+                previous = first;
+                continue;
+            }
+            let best = first;
+            let bestDistance = -1;
+            let prevForBucket = previous;
+            for (const item of bucket) {
+                const distance = prevForBucket && prevForBucket.event_id === item.event_id
+                    ? padDistance({ pleasure: prevForBucket.pleasure, arousal: prevForBucket.arousal, dominance: prevForBucket.dominance }, { pleasure: item.pleasure, arousal: item.arousal, dominance: item.dominance })
+                    : 0;
+                if (distance > bestDistance) {
+                    bestDistance = distance;
+                    best = item;
+                }
+                prevForBucket = item;
+            }
+            for (const item of bucket) {
+                if (item.id === best.id)
+                    continue;
+                removed += 1;
+                toDelete.push(item.id);
+            }
+            previous = best;
+        }
+        if (apply && toDelete.length > 0) {
+            const stmt = this.db.prepare('DELETE FROM emotion_history WHERE id = ?');
+            for (const id of toDelete)
+                stmt.run(id);
+        }
+        return removed;
     }
     loadEmotionHistory(eventId) {
         const rows = this.db

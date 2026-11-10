@@ -176,7 +176,7 @@ export interface EventRecord {
     importance: Unit;
     weight: Unit;
     links: EventLink[];
-    source: 'chat' | 'qq' | 'douyin_dm' | 'douyin_content' | 'minecraft' | 'game' | 'android' | 'system';
+    source: 'chat' | 'self_speech' | 'qq' | 'douyin_dm' | 'douyin_content' | 'minecraft' | 'game' | 'android' | 'system';
     createdAt: ISOTime;
     /** 说这句话时所在的对话窗口 / 工作区。窗口只是"工位"，不是记忆分区，但"刚在别处说的话"需要能被认出来 */
     sessionId?: string;
@@ -711,6 +711,11 @@ export interface DaughterConfig {
         prefer_quotes: boolean;
         /** 每轮最多保留几条「无原话且用户未参与」的条目（默认 0 = 全不注入） */
         max_unquoted: number;
+        /**
+         * FTS 命中但不在权重候选池里的事件，最多合并多少条放行（默认 200）。
+         * 0 = 关闭合并。不设上限等于把 max_candidates 绕过去。
+         */
+        fts_merge_max: number;
     };
     association: {
         max_depth: number;
@@ -839,6 +844,12 @@ export interface DaughterConfig {
         recall_boost: number;
         archive_threshold: number;
         archive_idle_days: number;
+        /** 边两端都超过这么多天没被召回，才开始批量降权 */
+        link_idle_days: number;
+        /** 每轮 tick 对长期未激活边的乘数（0.9 = 每次降 10%） */
+        link_decay_rate: number;
+        /** 降权后低于该强度的边直接摘掉 */
+        link_min_strength: number;
     };
     evolution: {
         l1_max_delta_per_write: number;

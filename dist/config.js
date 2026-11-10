@@ -28,6 +28,7 @@ export const defaultConfig = {
         fulltext_excerpt_chars: 120,
         prefer_quotes: true,
         max_unquoted: 0,
+        fts_merge_max: 200,
     },
     association: {
         max_depth: 2,
@@ -179,6 +180,9 @@ export const defaultConfig = {
         recall_boost: 0.05,
         archive_threshold: 0.15,
         archive_idle_days: 90,
+        link_idle_days: 30,
+        link_decay_rate: 0.9,
+        link_min_strength: 0.05,
     },
     evolution: {
         l1_max_delta_per_write: 0.02,
@@ -223,6 +227,7 @@ export const defaultConfig = {
         enabled: true,
         source_weights: {
             chat: 1,
+            self_speech: 0.6,
             game: 0.9,
             qq: 1,
             douyin_dm: 1,

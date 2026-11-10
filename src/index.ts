@@ -638,11 +638,36 @@ class Daughter implements DaughterPlugin {
     excludeArchived: boolean;
   }): Promise<RetrievalHit[]> {
     const store = this.store(input.characterId);
+    const candidates = store.listCandidates(!input.excludeArchived, this.config.retrieval.max_candidates);
+
+    // FTS 已独立查全库：命中但不在权重候选池里的事件也要放行，
+    // 否则事件超过 max_candidates 后，字面命中会被"权重前 N 条"截断。
+    // 合并数量单独设上限，避免绕过 max_candidates。
+    const mergeCap = Math.max(0, Math.round(this.config.retrieval.fts_merge_max ?? 200));
+    // FTS 查询上限不能跟着候选池走：两者被同一个参数卡住时，池外命中根本取不到，
+    // "合并放行"就失去意义。多取 mergeCap 条，保证池外候选有来源。
+    const fts = store.searchFts(input.query, Math.max(20, this.config.retrieval.max_candidates + mergeCap));
+    let pool = candidates;
+    if (mergeCap > 0 && fts.size > 0) {
+      const known = new Set(candidates.map((event) => event.id));
+      const extra: EventRecord[] = [];
+      for (const id of fts.keys()) {
+        if (extra.length >= mergeCap) break;
+        if (known.has(id)) continue;
+        const event = store.getEvent(id);
+        if (event && !event.archived) {
+          known.add(id);
+          extra.push(event);
+        }
+      }
+      if (extra.length > 0) pool = [...candidates, ...extra];
+    }
+
     return retrieveEvents({
       ...input,
       config: this.config,
-      candidates: store.listCandidates(!input.excludeArchived, this.config.retrieval.max_candidates),
-      ftsScores: (query) => store.searchFts(query, this.config.retrieval.max_candidates),
+      candidates: pool,
+      ftsScores: () => fts,
     });
   }
 
@@ -942,6 +967,9 @@ class Daughter implements DaughterPlugin {
     if (plan.decision === 'act') {
       store.setMeta('speak.lastAt', input.now);
       store.setMeta(dayKey, String(todayCount + 1));
+      // 主动开口也留进记忆：否则"她说过的话"只有面板能翻到，检索不到。
+      // 低权重 + participants 只记 self：可被想起，但不构成共同经历、不推关系。
+      if (plan.text) this.recordSelfSpeech(input.characterId, plan.text, input.now, l5);
       if (plan.lineIndex !== undefined) {
         store.setMeta('speak.recentLines', [...recentLines, plan.lineIndex].slice(-5).join(','));
       }
@@ -969,6 +997,40 @@ class Daughter implements DaughterPlugin {
       store.setMeta(holdKey, String(store.getMetaNumber(holdKey, 0) + 1));
     }
     return plan;
+  }
+
+  /**
+   * 主动开口写回（DEF-02）：低权重、participants 只记 self。
+   * 它不参与关系推进（evolvePersona 只在 afterResponse 走），只让"我说过的话"可被检索。
+   */
+  recordSelfSpeech(characterId: string, text: string, now: string, l5?: L5State): { eventId: string } | null {
+    const content = text.trim();
+    if (!content) return null;
+    const store = this.store(characterId);
+    const stamp = now.replace(/\D/g, '').slice(0, 14);
+    const intensity = l5
+      ? Math.max(0, Math.min(1, Math.abs(l5.emotion.pleasure) * 0.6 + l5.stress * 0.4))
+      : 0;
+    const event: EventRecord = {
+      id: `EVT-${stamp}-self-${Math.floor(this.rng() * 1e6).toString(16)}`,
+      characterId,
+      title: truncate(content, 40),
+      summary: content,
+      tags: ['自我开口'],
+      participants: ['self'],
+      emotionAtTime: { ...(l5?.emotion ?? { pleasure: 0, arousal: 0, dominance: 0 }), intensity },
+      emotionNowHistory: [],
+      importance: 0.3,
+      weight: 0.3,
+      links: [],
+      source: 'self_speech',
+      createdAt: now,
+      recallCount: 0,
+      archived: false,
+      schemaVersion: 1,
+    };
+    const result = this.ingest(store, event, content);
+    return { eventId: result.eventId };
   }
 
   /** 面板入口读取星图：按当前库实时重算并落盘 */

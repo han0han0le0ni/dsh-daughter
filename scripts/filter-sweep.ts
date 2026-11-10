@@ -85,6 +85,9 @@ console.log('重复最多的 5 组：');
 for (const item of [...duplicateTargets].sort((a, b) => b.archive.length - a.archive.length).slice(0, 5)) {
   console.log(`  ×${item.archive.length + 1}  ${item.keep.title.slice(0, 40)}  （保留 ${item.keep.id}）`);
 }
+// 回忆重构去重：同一事件同一小时只留位移最大的一条（dry-run 先统计）
+const duplicateHistory = store.dedupeEmotionHistory(false);
+console.log(`回看重复：${duplicateHistory} 条（同事件同小时只留位移最大一条）`);
 
 if (!apply) {
   console.log('\n这是 dry-run。确认无误后执行：npm run filter:sweep -- --apply');
@@ -126,7 +129,11 @@ const detached = store.detachLinks(
 );
 // 存量出边修剪：历史热点事件可能挂着上百条边，让 linkProximity 对所有候选都成立
 const trimmed = store.trimLinks();
+// 回忆重构去重：同一事件同一小时只留位移最大的一条
+const dedupedHistory = store.dedupeEmotionHistory(true);
 
-console.log(`\n已补显著性 ${backfilled} 条；已归档 ${archived} 条；清理 ${detached} 条事件的残留链接；修剪 ${trimmed} 条事件的出度。`);
+console.log(
+  `\n已补显著性 ${backfilled} 条；已归档 ${archived} 条；清理 ${detached} 条事件的残留链接；修剪 ${trimmed} 条事件的出度；去重回看 ${dedupedHistory} 条。`,
+);
 console.log(`剩余未归档 ${store.listCandidates(false, 10_000).length} 条。`);
 store.close();

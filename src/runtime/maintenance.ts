@@ -23,6 +23,46 @@ import {
   type WeightedLabel,
 } from './weights.js';
 
+/**
+ * 长边批量降权（DEF-15）：事件超过 link_idle_days 没被召回，说明它不再活跃；
+ * 与它相连的边每 24 小时批量降一次，低于门限摘掉。
+ * 不做逐边时间戳——为每条边存一个 lastActive 会把 links 的存储翻倍。
+ */
+export function decayStaleLinks(
+  store: Store,
+  config: DaughterConfig,
+  now: string,
+): { decayed: number; removed: number } {
+  const nowMs = Date.parse(now);
+  const lastRaw = store.getMeta('linkDecayAt');
+  const lastMs = lastRaw ? Date.parse(lastRaw) : Number.NaN;
+  // 每 24 小时最多降一次：tick 可能很频繁，逐轮降权会在一天内把边乘到 0
+  if (Number.isFinite(lastMs) && Number.isFinite(nowMs) && nowMs - lastMs < 86_400_000) {
+    return { decayed: 0, removed: 0 };
+  }
+  if (Number.isFinite(nowMs)) store.setMeta('linkDecayAt', now);
+
+  const idleDays = Math.max(1, config.decay.link_idle_days ?? 30);
+  const rate = Math.min(0.99, Math.max(0.1, config.decay.link_decay_rate ?? 0.9));
+  const floor = Math.max(0, config.decay.link_min_strength ?? 0.05);
+  let decayed = 0;
+  let removed = 0;
+
+  for (const event of store.listCandidates(false, 10_000)) {
+    if (event.links.length === 0) continue;
+    if (daysBetween(event.lastRecalledAt ?? event.createdAt, now) <= idleDays) continue;
+    const next: typeof event.links = [];
+    for (const link of event.links) {
+      const strength = link.strength * rate;
+      decayed += 1;
+      if (strength >= floor) next.push({ ...link, strength: Number(strength.toFixed(4)) });
+      else removed += 1;
+    }
+    store.updateEventLinks(event.id, next);
+  }
+  return { decayed, removed };
+}
+
 export function runTick(
   store: Store,
   config: DaughterConfig,
@@ -36,6 +76,9 @@ export function runTick(
   evolved: string[];
   /** 本轮做了回落（向基线回归）的会话数 */
   relaxed: number;
+  /** 本轮批量降权的边数与摘掉的边数 */
+  linkDecayed: number;
+  linkRemoved: number;
 } {
   let decayed = 0;
   let archived = 0;
@@ -106,6 +149,9 @@ export function runTick(
     store.detachLinks(store.listAllEvents().filter((event) => event.archived).map((event) => event.id));
   }
 
+  // 长期不活跃的边批量降权：不做的话图只会越连越密，最后所有候选都"有关联"
+  const linkDecay = decayStaleLinks(store, config, now);
+
   const overdraft = store.loadOverdraft();
   const nextOverdraft = clamp01(overdraft - 0.1 * elapsedDays);
   if (nextOverdraft !== overdraft) store.saveOverdraft(nextOverdraft);
@@ -118,7 +164,17 @@ export function runTick(
 
   buildStarMap(store, now);
 
-  return { decayed, archived, forgotten, recovered: nextOverdraft < overdraft, prunedLogs, evolved, relaxed };
+  return {
+    decayed,
+    archived,
+    forgotten,
+    recovered: nextOverdraft < overdraft,
+    prunedLogs,
+    evolved,
+    relaxed,
+    linkDecayed: linkDecay.decayed,
+    linkRemoved: linkDecay.removed,
+  };
 }
 
 /**

@@ -93,6 +93,8 @@ export declare class Store {
      * emotion_history，事件上万条时这一项就是纯浪费。
      */
     updateEventDecay(id: string, weight: number, archived: boolean): void;
+    /** 长边批量降权专用：只改 links，不重读整行与回看记录 */
+    updateEventLinks(id: string, links: EventRecord['links']): void;
     /** 归档事件落盘到 archive/：完整记录留档，索引里只保留 archived 标记与薄字段 */
     archiveEvent(event: EventRecord): void;
     /** 该角色的事件计数，供重置计划展示（只走索引，不读正文） */
@@ -230,6 +232,12 @@ export declare class Store {
     private readYamlDir;
     private listFiles;
     private mapRow;
+    /**
+     * 回忆重构去重（DEF-07）：同一事件同一小时内只保留「位移最大」的一条。
+     * 位移 = 与该事件前一条回看记录的 PAD 距离；组内第一条与上一条（可能跨小时）比。
+     * apply=false 只统计不删除，供 filter:sweep 的 dry-run 使用。
+     */
+    dedupeEmotionHistory(apply?: boolean): number;
     private loadEmotionHistory;
     /**
      * 回忆重构合并：超过上限时不丢弃中间记录，而是把情绪最接近的相邻两条合并成一条平均记录。

@@ -37,6 +37,8 @@ retrieval:
   prefer_quotes: true
   # 每轮最多保留几条「用户没参与、又没有原话」的模板条目（刷视频/闲聊对答）
   max_unquoted: 0
+  # FTS 命中但不在权重候选池里的事件，最多合并多少条放行（0 = 关闭）
+  fts_merge_max: 200
 
 association:
   max_depth: 2
@@ -261,6 +263,7 @@ filter:
   # 来源可信度：同时用于写入门控与检索降权（真人对话恒为 1，永远不会因显著低被丢弃）
   source_weights:
     chat: 1.0
+    self_speech: 0.6
     qq: 1.0
     douyin_dm: 1.0
     game: 0.9
@@ -305,6 +308,10 @@ decay:
   recall_boost: 0.05
   archive_threshold: 0.15
   archive_idle_days: 90
+  # 边两端都超过这么多天没被召回，tick 里批量降权；低于 link_min_strength 摘掉
+  link_idle_days: 30
+  link_decay_rate: 0.9
+  link_min_strength: 0.05
 
 # 情绪回落：闲置越久，L5 越靠近下面的基线；连续对话时几乎不生效（§14.7）
 emotion_relax:
