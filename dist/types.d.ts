@@ -669,6 +669,24 @@ export interface ScoreWeights {
     emotion_match: number;
     link_proximity: number;
 }
+/** A1 日志层：每轮情绪识别的可观测记录，不存原文（只存哈希） */
+export interface PolarityLogEntry {
+    at: ISOTime;
+    characterId: string;
+    sessionId: string;
+    turnId: string;
+    /** sha256(用户文本) 前 16 位；关闭 include_text_hash 时为 null */
+    textHash: string | null;
+    hits: string[];
+    negations: string[];
+    positives: string[];
+    negatives: string[];
+    polarity: number;
+    strength: number;
+    padDelta: PadState;
+    padAfter: PadState;
+    source: EventRecord['source'];
+}
 export interface DaughterConfig {
     version: number;
     character_id: string;
@@ -959,6 +977,12 @@ export interface DaughterConfig {
      * （实测 safety 贴 1.00、stress 贴 0.00 之后不再产生任何信息）。
      * tick 里按闲置时长向基线回归，情绪三维同步向 L1 心情基线靠拢。
      */
+    /** A1 日志层：情绪识别明细，默认开启，保留 90 天 */
+    polarity_log: {
+        enabled: boolean;
+        retention_days: number;
+        include_text_hash: boolean;
+    };
     emotion_relax: {
         enabled: boolean;
         /** 每小时向基线回归的比例（0..1） */

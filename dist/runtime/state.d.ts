@@ -9,6 +9,24 @@ export declare function createInitialL5(characterId: string, sessionId: string, 
 export declare function carryL5(previous: L5State, sessionId: string, now: string, persona: PersonaBundle, config: DaughterConfig): L5State;
 export declare function updateL5(prev: L5State, text: string, now: string, persona: PersonaBundle): L5State;
 export declare function selectSubpersona(l4: L4Contextual, preferredId?: string): SubPersona;
+export interface SentimentDetail {
+    polarity: number;
+    strength: number;
+    /** 所有命中的情绪词（含被否定的正面词），供日志排查 */
+    hits: string[];
+    /** 命中的否定词 */
+    negations: string[];
+    /** 未被否定的正面词 */
+    positives: string[];
+    /** 命中的负面词 */
+    negatives: string[];
+}
+/**
+ * 情绪识别明细（A1 日志层）：极性/强度仍然是原公式的输出，
+ * 只是把命中词、否定词一并带出来，供 logs/polarity 离线标定。
+ * 不改 `sentimentPolarity` / `sentimentStrength` 的返回语义。
+ */
+export declare function analyzeSentiment(text: string): SentimentDetail;
 export declare function sentimentPolarity(text: string): number;
 /**
  * 情绪强度 0..1：极性只说方向，"你好"和"今天好累压力好大"都是 |1|，

@@ -1,5 +1,6 @@
 import { loadConfig, resolveDataRoot } from './config.js';
 import { performance } from 'node:perf_hooks';
+import { createHash } from 'node:crypto';
 import { Store } from './store.js';
 import { Observability } from './runtime/observability.js';
 import type {
@@ -26,11 +27,19 @@ import type { Logger } from './util.js';
 import { createRng, relativeTime, safeFileName, silentLogger, truncate } from './util.js';
 import { applyBodySignal, pickMotionByPad } from './runtime/body-link.js';
 import { decideIngest, type FilterAction } from './runtime/filter.js';
-import { carryL5, createInitialL5, selectSubpersona, sentimentPolarity, updateL5 } from './runtime/state.js';
+import {
+  analyzeSentiment,
+  carryL5,
+  createInitialL5,
+  selectSubpersona,
+  sentimentPolarity,
+  updateL5,
+} from './runtime/state.js';
 import { assignThread, isDialogueSource, pruneOpenThreads, type ThreadHead } from './runtime/threading.js';
 import { evaluateSpeak, localDayKey } from './runtime/speak.js';
 import { readForeground } from './runtime/desktop-observe.js';
 import { containsDiagnosisLabel, evaluateSafety } from './runtime/safety.js';
+import { logPolarity, prunePolarityLog } from './runtime/polarity-log.js';
 import {
   SURPRISE_REASON,
   applySurprise,
@@ -149,6 +158,35 @@ class Daughter implements DaughterPlugin {
 
     // 原始状态只由对话驱动；桌宠信号在 effective() 里叠加，存盘存原始值（§4.3）
     const l5 = updateL5(prev, text, now, persona);
+
+    // A1 日志层：只记派生结果与命中词，不存原文；关闭时不留任何痕迹
+    if (this.config.polarity_log?.enabled !== false) {
+      const detail = analyzeSentiment(text);
+      logPolarity(this.dataRoot, {
+        at: now,
+        characterId: ctx.characterId,
+        sessionId: ctx.sessionId,
+        turnId: ctx.turnId,
+        textHash:
+          this.config.polarity_log?.include_text_hash === false
+            ? null
+            : createHash('sha256').update(text).digest('hex').slice(0, 16),
+        hits: detail.hits,
+        negations: detail.negations,
+        positives: detail.positives,
+        negatives: detail.negatives,
+        polarity: detail.polarity,
+        strength: detail.strength,
+        padDelta: {
+          pleasure: Number((l5.emotion.pleasure - prev.emotion.pleasure).toFixed(4)),
+          arousal: Number((l5.emotion.arousal - prev.emotion.arousal).toFixed(4)),
+          dominance: Number((l5.emotion.dominance - prev.emotion.dominance).toFixed(4)),
+        },
+        padAfter: { ...l5.emotion },
+        source: input.source,
+      });
+    }
+
     l5.emotionalOverdraft = store.loadOverdraft();
 
     const effective = this.effective(ctx.characterId, l5, now);
@@ -873,7 +911,11 @@ class Daughter implements DaughterPlugin {
     recovered: boolean;
     prunedLogs: number;
   }> {
-    return runTick(this.store(input.characterId), this.config, input.now);
+    const result = runTick(this.store(input.characterId), this.config, input.now);
+    if (this.config.polarity_log?.enabled !== false) {
+      prunePolarityLog(this.dataRoot, input.characterId, this.config.polarity_log.retention_days, input.now);
+    }
+    return result;
   }
 
   /**
