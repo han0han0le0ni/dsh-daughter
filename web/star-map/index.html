@@ -156,6 +156,22 @@
   .detail-foot { margin-top: 9px; font-size: 10.5px; color: #5f6c85; display: flex; flex-wrap: wrap; gap: 10px; }
   .detail-foot span { font-variant-numeric: tabular-nums; }
 
+  /* 两种说法：冲突并列，不做成一条"结论" */
+  .duel { margin-top: 10px; padding-top: 9px; border-top: 1px dashed rgba(232, 104, 74, .28); }
+  .duel-title { font-size: 10px; letter-spacing: .06em; color: #e88a6a; margin-bottom: 6px; }
+  .duel-pair { display: flex; gap: 6px; align-items: stretch; }
+  .duel-side {
+    flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; gap: 3px;
+    background: rgba(122, 152, 200, .06); border: 1px solid rgba(122, 152, 200, .14);
+    border-radius: 8px; padding: 6px 7px;
+  }
+  .duel-side b { font-size: 11px; font-weight: 600; color: #e4ecfa; line-height: 1.45; word-break: break-word; }
+  .duel-tag { align-self: flex-start; font-size: 9px; padding: 1px 5px; border-radius: 4px; background: rgba(122, 152, 200, .14); color: #8b9ab5; }
+  .duel-side.pos .duel-tag { background: rgba(90, 216, 166, .14); color: #5ad8a6; }
+  .duel-side.neg .duel-tag { background: rgba(232, 104, 74, .16); color: #e8684a; }
+  .duel-meta { font-size: 10px; color: #7b8aa5; font-variant-numeric: tabular-nums; }
+  .duel-vs { align-self: center; font-size: 11px; color: #e88a6a; }
+
   /* 画布与悬停浮层 */
   #scene { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; cursor: grab; touch-action: none; }
   #scene.dragging { cursor: grabbing; }
@@ -444,6 +460,29 @@ function describe(node) {
   return rows;
 }
 
+/* 两种说法：冲突只加链接、不覆盖事实，所以详情里两边并排摆，判定交给看的人 */
+function renderContradictions(node) {
+  const meta = node.meta ?? {};
+  const peers = node.type === 'event' && Array.isArray(meta.contradictions) ? meta.contradictions : [];
+  if (peers.length === 0) return '';
+  const side = (item, tag) => {
+    const pleasure = Number(item.pleasure);
+    const tone = Number.isFinite(pleasure) ? (pleasure >= 0 ? ' pos' : ' neg') : '';
+    const value = Number.isFinite(pleasure) ? (pleasure >= 0 ? '+' : '') + pleasure.toFixed(2) : '—';
+    return '<div class="duel-side' + tone + '">' +
+      '<span class="duel-tag">' + tag + '</span>' +
+      '<b>' + escapeHtml(item.label || item.id) + '</b>' +
+      '<span class="duel-meta">' + escapeHtml((item.emotion || '—') + ' · ' + value) + '</span>' +
+      '<span class="duel-meta">' + escapeHtml(fmtTime(item.createdAt)) + '</span>' +
+      '</div>';
+  };
+  const self = { label: displayLabel(node), emotion: meta.emotion, pleasure: meta.pleasure, createdAt: meta.createdAt };
+  const pairs = peers.map((peer) =>
+    '<div class="duel-pair">' + side(self, '这条') + '<div class="duel-vs">↔</div>' + side(peer, '另一种') + '</div>');
+  return '<div class="duel"><div class="duel-title">两种说法 · 并列显示，不替她选哪条是真的</div>' +
+    pairs.join('') + '</div>';
+}
+
 /* 悬停浮层：只给"一眼够用"的两三条，详细信息留给点击 */
 function brief(node) {
   const meta = node.meta ?? {};
@@ -495,6 +534,7 @@ function openDetail(node, linkCount) {
     (TYPE_LABEL[node.type] ?? node.type) + '</span><button class="x" id="detail-close">×</button></div>' +
     '<h2>' + escapeHtml(displayLabel(node)) + '</h2>' +
     (rows || '<div class="row"><span class="k">无更多字段</span></div>') +
+    renderContradictions(node) +
     '<div class="detail-foot"><span>' + escapeHtml(state.galaxyName.get(node.galaxy) ?? '') + '</span><span>关联 ' +
     linkCount + ' 条</span><span>节点 ' + escapeHtml(node.id) + '</span></div>';
   detail.hidden = false;

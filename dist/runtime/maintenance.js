@@ -1,6 +1,7 @@
 import { buildStarPanels } from './panels.js';
 import { clamp01, daysBetween, truncate } from '../util.js';
 import { forgetSweep } from './filter.js';
+import { defaultConfig } from '../config.js';
 import { PREFERENCE_ANCHORS, STAGE_ANCHORS, bucketIndex, distribute, primary, } from './weights.js';
 /**
  * 长边批量降权（DEF-15）：事件超过 link_idle_days 没被召回，说明它不再活跃；
@@ -115,7 +116,7 @@ export function runTick(store, config, now) {
         store.saveOverdraft(nextOverdraft);
     const prunedLogs = store.pruneEvolutionLogs(config.evolution.log_retention_days, now);
     const relaxed = relaxL5(store, config, now);
-    const evolved = evolvePersona(store, now);
+    const evolved = evolvePersona(store, now, config);
     buildStarMap(store, now);
     return {
         decayed,
@@ -229,7 +230,7 @@ function normalizeValues(values) {
  */
 /** 不用满 24 小时也能推进关系：每累计这么多轮对话就算一次"处了一段时间" */
 const PERSONA_TURNS_PER_EVOLVE = 8;
-export function evolvePersona(store, now) {
+export function evolvePersona(store, now, config = defaultConfig) {
     const last = store.getMeta('lastPersonaEvolveAt');
     const turns = store.getMetaNumber('personaTurns', 0);
     const lastTurns = store.getMetaNumber('lastPersonaEvolveTurns', 0);
@@ -301,17 +302,87 @@ export function evolvePersona(store, now) {
         });
         changed.push('L2');
     }
-    // L3 认知应对
+    // L3 认知应对（DEF-08）：先写证据，同向模式重复够多才动一格。
+    // 单次事件只落证据、不改权重——否则 L3 会变成第二个 L1，而且没法回溯。
     const beforeL3 = persona.l3;
     let defense = beforeL3.defenseMaturity;
-    if (recent.length >= 3) {
-        const avgPleasure = recent.reduce((sum, event) => sum + event.emotionAtTime.pleasure, 0) / recent.length;
-        defense = clamp01(defense + (avgPleasure >= 0.1 ? 0.02 : avgPleasure <= -0.2 ? -0.01 : 0));
+    const l3Evidence = [...(beforeL3.evidence ?? [])];
+    const newest = recent.reduce((best, event) => {
+        const at = Date.parse(event.createdAt);
+        return !best || at > best.at ? { id: event.id, at } : best;
+    }, null);
+    const anchor = store.getMeta('l3.evidence_anchor');
+    // 只看锚点之后的新事件：不同批次的情绪方向要分开判断，
+    // 否则"前两批很好、这一批很差"会被七天平均值抹平，永远只看到正向。
+    const anchorAt = anchor ? store.getEvent(anchor)?.createdAt : undefined;
+    const batch = anchorAt
+        ? recent.filter((event) => Date.parse(event.createdAt) > Date.parse(anchorAt))
+        : recent;
+    const batchWeight = batch.reduce((sum, event) => sum + Math.max(0.01, event.weight), 0);
+    const batchAvgPleasure = batchWeight > 0
+        ? batch.reduce((sum, event) => sum + event.emotionAtTime.pleasure * Math.max(0.01, event.weight), 0) / batchWeight
+        : 0;
+    const direction = batchAvgPleasure >= 0.05 ? 1 : batchAvgPleasure <= -0.1 ? -1 : 0;
+    let appendedEvidence = false;
+    // 同一批事件只记一次证据：否则每次 tick 都会把同一段时间重新数一遍
+    if (batch.length >= 3 && newest && newest.id !== anchor && direction !== 0) {
+        l3Evidence.push({
+            id: `${store.newEvolutionId(now)}-defenseMaturity`,
+            at: now,
+            eventId: newest.id,
+            layer: 'L3',
+            dimension: 'defenseMaturity',
+            // 证据本身不动权重，delta 留 0；只有"转正"那条才写实际变化
+            delta: 0,
+            impactKind: 'cumulative',
+            impact: round3(batchAvgPleasure),
+            quote: `新近 ${batch.length} 条事件，加权平均情绪 ${batchAvgPleasure.toFixed(2)}`,
+        });
+        store.setMeta('l3.evidence_anchor', newest.id);
+        appendedEvidence = true;
+    }
+    // 只看上次真正动过权重之后攒下的证据：证据链本身就是"重复次数"的账本
+    let lastAppliedIndex = -1;
+    l3Evidence.forEach((entry, index) => {
+        if (entry.layer === 'L3' && entry.dimension === 'defenseMaturity' && entry.delta !== 0)
+            lastAppliedIndex = index;
+    });
+    const pending = l3Evidence
+        .slice(lastAppliedIndex + 1)
+        .filter((entry) => entry.layer === 'L3' && entry.dimension === 'defenseMaturity');
+    const minRepeats = Math.max(2, Math.round(config.personality.l3_evidence_min_repeats));
+    const l3Step = Math.max(0, config.personality.l3_evidence_step);
+    const repeatedPositive = pending.length >= minRepeats && pending.every((entry) => entry.impact > 0);
+    const repeatedNegative = pending.length >= minRepeats && pending.every((entry) => entry.impact < 0 && Math.abs(entry.impact) >= 0.1);
+    let promoted = false;
+    if (l3Step > 0 && repeatedPositive && defense < 0.95) {
+        defense = clamp01(defense + l3Step);
+        promoted = true;
+    }
+    else if (l3Step > 0 && repeatedNegative && defense > 0.05) {
+        defense = clamp01(defense - l3Step / 2);
+        promoted = true;
+    }
+    if (promoted) {
+        // 记一条实际变化，作为下一次统计的起点，也作为回滚可读的凭据
+        l3Evidence.push({
+            id: `${store.newEvolutionId(now)}-defenseMaturity`,
+            at: now,
+            eventId: newest?.id ?? '',
+            layer: 'L3',
+            dimension: 'defenseMaturity',
+            delta: round3(defense - beforeL3.defenseMaturity),
+            impactKind: 'cumulative',
+            impact: round3(batchAvgPleasure),
+            quote: `${pending.length} 次同向证据后转正：${beforeL3.defenseMaturity.toFixed(3)} → ${defense.toFixed(3)}`,
+        });
     }
     const biasKeys = Object.keys(beforeL3.biasWeights);
     const bias = normalizeValues(biasKeys.map((key) => beforeL3.biasWeights[key]));
     const coping = normalizeValues(beforeL3.copingStrategies.map((strategy) => strategy.weight));
-    if (Math.abs(defense - beforeL3.defenseMaturity) >= 0.01 || bias.changed || coping.changed) {
+    const weightsChanged = Math.abs(defense - beforeL3.defenseMaturity) >= 0.01 || bias.changed || coping.changed;
+    if (weightsChanged || appendedEvidence || promoted) {
+        const evidenceCap = Math.max(20, Math.round(config.personality.evidence_cap ?? 200));
         const l3 = {
             ...beforeL3,
             defenseMaturity: round3(defense),
@@ -320,19 +391,24 @@ export function evolvePersona(store, now) {
                 ...strategy,
                 weight: coping.values[index],
             })),
-            updatedAt: now,
+            evidence: l3Evidence.slice(-evidenceCap),
+            updatedAt: weightsChanged ? now : beforeL3.updatedAt,
         };
         store.savePersonaLayer('l3', l3);
-        store.appendEvolution({
-            id: store.newEvolutionId(now),
-            characterId: store.characterId,
-            target: 'L3',
-            before: { defenseMaturity: beforeL3.defenseMaturity, biasWeights: beforeL3.biasWeights },
-            after: { defenseMaturity: l3.defenseMaturity, biasWeights: l3.biasWeights },
-            reason: `近 7 天 ${recent.length} 条事件的防御成熟度微调与权重归一化`,
-            at: now,
-        });
-        changed.push('L3');
+        if (weightsChanged) {
+            store.appendEvolution({
+                id: store.newEvolutionId(now),
+                characterId: store.characterId,
+                target: 'L3',
+                before: { defenseMaturity: beforeL3.defenseMaturity, biasWeights: beforeL3.biasWeights },
+                after: { defenseMaturity: l3.defenseMaturity, biasWeights: l3.biasWeights },
+                reason: promoted
+                    ? `${pending.length} 次同向证据推动防御成熟度 ${beforeL3.defenseMaturity.toFixed(3)} → ${l3.defenseMaturity.toFixed(3)}`
+                    : `近 7 天 ${recent.length} 条事件的防御成熟度微调与权重归一化`,
+                at: now,
+            });
+            changed.push('L3');
+        }
     }
     // L4 情境人格
     const beforeL4 = persona.l4;
@@ -397,6 +473,125 @@ export function applyPersonaDrift(store, config, persona, polarity, now) {
     };
     store.appendEvolution(entry);
     return { changed: true, evolutionId: entry.id };
+}
+function rateOf(success, fail) {
+    const total = success + fail;
+    return total === 0 ? 0 : success / total;
+}
+function snapshotOf(skill, now) {
+    return {
+        version: skill.version,
+        name: skill.name,
+        keywords: [...skill.keywords],
+        steps: skill.steps.map((step) => ({ ...step })),
+        requiredTools: [...skill.requiredTools],
+        boundary: { ...skill.boundary, forbiddenContexts: [...skill.boundary.forbiddenContexts] },
+        maturity: skill.maturity,
+        successCount: skill.successCount,
+        failCount: skill.failCount,
+        status: skill.status,
+        savedAt: now,
+    };
+}
+/**
+ * 影子池观察（DEF-19）。
+ *
+ * 候选版本在「同一任务」上并行记账：判定用严格口径（候选的 requiredTools 必须全部出现在本轮证据里），
+ * 在用版本仍用宽松口径（任一命中）。**没有工具证据的轮次不记样本**——那种"被激活即成功"是自证，
+ * 拿它当训练信号会把候选一路托到转正。
+ *
+ * 转正三条件：样本 ≥ min_samples、胜率 ≥ win_rate、且比在用版本高出 margin。
+ * 转正前把旧版本整体快照进 `previous`，`rollbackSkill` 可精确恢复。
+ */
+export function observeShadow(store, skill, toolsUsed, config, now) {
+    const settings = config.skills.shadow;
+    const primaryWinRate = rateOf(skill.successCount, skill.failCount);
+    const base = {
+        skill,
+        recorded: false,
+        promoted: false,
+        samples: skill.shadow ? skill.shadow.success + skill.shadow.fail : 0,
+        shadowWinRate: skill.shadow ? rateOf(skill.shadow.success, skill.shadow.fail) : 0,
+        primaryWinRate,
+        reason: '',
+    };
+    if (!settings.enabled)
+        return { ...base, reason: '影子池未开启' };
+    if (!skill.shadow)
+        return { ...base, reason: '没有候选版本' };
+    if (toolsUsed.length === 0)
+        return { ...base, reason: '本轮没有工具证据，不记样本' };
+    const candidateTools = skill.shadow.patch.requiredTools ?? skill.requiredTools;
+    const shadowOk = candidateTools.length === 0 || candidateTools.every((tool) => toolsUsed.includes(tool));
+    const samples = skill.shadow.success + skill.shadow.fail + 1;
+    const shadowSuccess = skill.shadow.success + (shadowOk ? 1 : 0);
+    const shadowWinRate = shadowSuccess / samples;
+    const shouldPromote = samples >= settings.min_samples &&
+        shadowWinRate >= settings.win_rate &&
+        shadowWinRate >= primaryWinRate + settings.margin;
+    const apply = (current) => {
+        const shadow = current.shadow;
+        if (!shouldPromote) {
+            return {
+                ...current,
+                shadow: { ...shadow, success: shadow.success + (shadowOk ? 1 : 0), fail: shadow.fail + (shadowOk ? 0 : 1) },
+                updatedAt: now,
+            };
+        }
+        return {
+            ...current,
+            ...shadow.patch,
+            version: current.version + 1,
+            maturity: clamp01(current.maturity + 0.05),
+            // 候选的战绩就是它在同一任务上的真实战绩，转正后从这份记录继续累计
+            successCount: shadowSuccess,
+            failCount: samples - shadowSuccess,
+            failStreak: 0,
+            breakerUntil: undefined,
+            status: 'active',
+            shadow: undefined,
+            previous: snapshotOf(current, now),
+            updatedAt: now,
+        };
+    };
+    const updated = store.mutateSkill(skill.id, apply) ?? apply(skill);
+    if (!shouldPromote) {
+        return { ...base, skill: updated, recorded: true, samples, shadowWinRate, reason: '样本或胜率未达转正条件' };
+    }
+    store.appendEvolution({
+        id: store.newEvolutionId(now),
+        characterId: store.characterId,
+        target: 'skill',
+        before: { skillId: skill.id, version: skill.version, name: skill.name },
+        after: { skillId: updated.id, version: updated.version, name: updated.name },
+        reason: `影子池转正：${samples} 样本、胜率 ${shadowWinRate.toFixed(2)}（在用 ${primaryWinRate.toFixed(2)}）`,
+        at: now,
+    });
+    return { ...base, skill: updated, recorded: true, promoted: true, samples, shadowWinRate, reason: '转正' };
+}
+/** 回滚到上一版快照（只回滚一级；恢复后清掉快照，避免来回抖动） */
+export function rollbackSkill(store, skillId, now) {
+    return store.mutateSkill(skillId, (current) => {
+        const previous = current.previous;
+        if (!previous)
+            return current;
+        return {
+            ...current,
+            name: previous.name,
+            keywords: [...previous.keywords],
+            steps: previous.steps.map((step) => ({ ...step })),
+            requiredTools: [...previous.requiredTools],
+            boundary: { ...previous.boundary, forbiddenContexts: [...previous.boundary.forbiddenContexts] },
+            version: previous.version,
+            maturity: previous.maturity,
+            successCount: previous.successCount,
+            failCount: previous.failCount,
+            status: previous.status,
+            shadow: undefined,
+            previous: undefined,
+            updatedAt: now,
+        };
+    });
 }
 /**
  * 技能成熟度累计（§9.1 状态机）：
@@ -714,13 +909,35 @@ function emotionLabel(pad) {
         return '烦躁';
     return '平静';
 }
+/** 详情页最多并列几条冲突说法：冲突多到刷屏时，先看最近的几条就够判断了 */
+const MAX_CONTRADICTIONS = 5;
+/**
+ * 冲突并列（DEF-09 展示层）：把对面的说法连同当时感受一起带给星图详情，
+ * 让两边并排出现，而不是按链接强度挑一条当事实。
+ */
+function contradictionPeers(event, byId) {
+    return event.links
+        .filter((link) => link.kind === 'contradiction')
+        .map((link) => byId.get(link.targetId))
+        .filter((peer) => peer !== undefined && !peer.archived)
+        .slice(0, MAX_CONTRADICTIONS)
+        .map((peer) => ({
+        id: peer.id,
+        label: peer.title,
+        emotion: emotionLabel(peer.emotionAtTime),
+        pleasure: Number(peer.emotionAtTime.pleasure.toFixed(3)),
+        createdAt: peer.createdAt,
+    }));
+}
 export function buildStarMap(store, now) {
     const events = store.listAllEvents().filter((event) => !event.archived);
+    const eventById = new Map(events.map((event) => [event.id, event]));
     const nodes = [];
     const edges = [];
     // 1. 海马体 · 情景记忆（历史感受 + 当下回顾感受）
     for (const event of events) {
         const review = event.emotionNowHistory[event.emotionNowHistory.length - 1];
+        const contradictions = contradictionPeers(event, eventById);
         nodes.push({
             type: 'event',
             galaxy: 'hippocampus.event',
@@ -744,6 +961,8 @@ export function buildStarMap(store, now) {
                 pleasure: Number(event.emotionAtTime.pleasure.toFixed(3)),
                 intensity: Number(event.emotionAtTime.intensity.toFixed(3)),
                 ageDays: Math.max(0, Math.round((Date.parse(now) - Date.parse(event.createdAt)) / 86_400_000)),
+                // 没有冲突时不出字段，避免每条事件都带一个空数组
+                ...(contradictions.length > 0 ? { contradictions } : {}),
             },
         });
     }

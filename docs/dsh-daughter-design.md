@@ -5,7 +5,7 @@
 | 插件名 | dsh-daughter |
 | 文档类型 | 设计文档 / 技术评审稿（不含实现代码） |
 | 目标运行形态 | TypeScript / Node 插件 |
-| 状态 | 待评审（P0–P8 已落地并核对，P9 3/7；核对基准：`npm test` 203 项、`npm run check:link` 18 项全绿、`tsc --noEmit` 无错） |
+| 状态 | 待评审（P0–P8 已落地并核对，P9 3/7；核对基准：当前版本 <!--docsync:version-->0.7.1<!--/docsync-->，`npm test` <!--docsync:test_count-->299<!--/docsync--> 项、`npm run check:link` <!--docsync:check_items-->22<!--/docsync--> 项全绿、`tsc --noEmit` 无错） |
 | 日期 | 2026-11-02（v0.2 2026-11-04；v0.3 加固 + 桌宠弱耦合 2026-11-04；v0.4 认知滤网 + 星图观感 + 记忆情感闭环 2026-11-05；v0.5 性格多样性演化 2026-11-06） |
 | 适用范围 | 人格陪伴、长期记忆、技能与资产、条件反射、多应用连接 |
 
@@ -1365,6 +1365,20 @@ security.connector_token（≥16 字符，显式固定，多机/容器用）
 
 **默认关闭**：`desktop.enabled` 默认 `false`。桌面连接器提供的是屏幕画面与键鼠注入，属于"开了就有风险"的能力，必须用户显式打开；打开后仍然要令牌，两者缺一不可。
 
+### 12.3 外部适配器外置与清单（DEF-03）
+
+核心只承诺两件事：通用收件口 `/connectors/<source>/ingest`，以及**收件协议版本**。QQ / Minecraft / 游戏之类的适配器是外置插件，自己带清单，核心不把任何适配器的版本号写死。
+
+| # | 约定 | 代码落点 | 验证 |
+| --- | --- | --- | --- |
+| 1 | 适配器目录 `connectors/<source>/connector.json` 声明 `{ source, protocol, version }` | `runtime/connector-registry.ts` 的 `readConnectorManifests` | 缺清单按白名单放行（兼容旧版）；有清单则校验 |
+| 2 | 核心协议版本 `CONNECTOR_PROTOCOL = 1`；清单声明不一致时**该来源被摘掉**并记 WARN | `buildIngestRegistry` | protocol=2 的来源不出现在注册表里 |
+| 3 | 来源白名单改为可配 `connectors.ingest_sources`，归一化统一小写下划线 | `config.ts` 的 connectors 归一化 | 配置 ` QQ ` / `douyin-dm` 会被规范或过滤 |
+| 4 | 启动时只读一次清单，运行期不碰磁盘；适配器升级后重启宿主生效 | `host.ts` 的 `startBridge` | 清单拒绝项写入启动日志 |
+| 5 | 清单坏 JSON / 未知来源只影响它自己，不阻断其它连接器 | `readConnectorManifests` | 坏清单进 `rejected`，其余照常 |
+
+验证基线：`tests/connector-registry.test.ts` **4 项**；`parseExternalIngestPath` 的默认参数仍保留内置集合，未配置时行为与旧版一致。
+
 ---
 
 ## 13. 可观测性
@@ -1402,7 +1416,7 @@ security.connector_token（≥16 字符，显式固定，多机/容器用）
 
 ### 14.1 实现核对（截至 2026-11-06 v0.5）
 
-核对基准：`src/` 当前构建（**203 项测试 + 18 项自检全绿**，2026-11-06 性格演化、行为动机与主动开口之后）+ VPet MOD 实测 + Android ADB / 电脑桌面本地模拟。
+核对基准：`src/` 当前构建（**<!--docsync:test_count-->299<!--/docsync--> 项测试 + <!--docsync:check_items-->22<!--/docsync--> 项自检全绿**）+ VPet MOD 实测 + Android ADB / 电脑桌面本地模拟。
 
 | 项 | 设计表述 | 实现现状 | 处置 |
 | --- | --- | --- | --- |
@@ -1463,9 +1477,9 @@ security.connector_token（≥16 字符，显式固定，多机/容器用）
 
 ### 14.4 适配性 / 联动性自检（`npm run check:link`）
 
-不依赖真实桌宠与真实宿主，用临时目录 + 临时端口（`DSH_DAUGHTER_BRIDGE_PORT`）跑一遍「旧数据能不能读、旧连接器能不能连、链路通不通」，输出 PASS / WARN / FAIL，有 FAIL 时退出码 1。当前 **18 项全绿**（PASS 18 / WARN 0 / FAIL 0，2026-11-05 复核）。
+不依赖真实桌宠与真实宿主，用临时目录 + 临时端口（`DSH_DAUGHTER_BRIDGE_PORT`）跑一遍「旧数据能不能读、旧连接器能不能连、链路通不通」，输出 PASS / WARN / FAIL，有 FAIL 时退出码 1。当前 **<!--docsync:check_items-->22<!--/docsync--> 项全绿**（PASS <!--docsync:check_items-->22<!--/docsync--> / WARN 0 / FAIL 0）。
 
-> 其中「`dist` 是否比源码新」一项在 `dist` 落后时会报 WARN 而不是 FAIL；先 `npm run build` 再跑自检才是全绿状态，否则会是 PASS 17 / WARN 1。
+> 其中「`dist` 是否比源码新」一项在 `dist` 落后时会报 WARN 而不是 FAIL；先 `npm run build` 再跑自检才是全绿状态，否则该项为 WARN、其余项照常 PASS。
 
 自检默认端口为 **47912**，与插件在 DSH 里真实监听的 47612 分开：两者共用时会连到正在运行的应用实例，读到的是那边残留的队列（表现为 `thinking` 缺失、`reply` 缺失、体力疲劳不抬升），而不是自检自己造的数据。脚本先把端口写进 `DSH_DAUGHTER_BRIDGE_PORT`，再动态 import 宿主模块，保证「自检连的端口」与「自检起的端口」是同一个。
 
@@ -1659,7 +1673,74 @@ security.connector_token（≥16 字符，显式固定，多机/容器用）
 
 验证基线：`tests/speak.test.ts` **20 项**；`npm test` 203 项全绿，`check:link` 仍 PASS 18。
 
+**影子模式与统计（DEF-18）**：`speak.shadow` 打开后即使 `enabled: false` 也照常评估，但**不投递、不写冷却/日计数/carry/记忆**——观察动作不能改变被观察的行为；`speak.stats` 把每轮 `act / hold / silent` 及动机按日聚合成 7 天滚动桶（`speak.stats` meta，只存计数不存正文），面板据此显示"沉默占比"。先影子跑几天看 none 比例，再决定是否打开正式开口。
+
 > 已知缺口：文案是模板不是模型生成；出口虽已抽象成 `SpeakSink`，但现成实现只能投桌宠气泡——插件无宿主会话写入权限，消息进不了聊天记录；`idle_half_min` / `threshold` / `max_per_day` 已按真实 L5 估算标定（活跃档），仍缺长期使用观察——太吵就往回加 `min_idle_min` 与 `threshold`。
+
+### 14.11 思考碎碎念（DEF-23）
+
+与 §14.10 分开：主动开口是**社交意愿**（想你 / 想分享 / 想照顾），碎碎念只是**心里有事**——情绪显著、唤醒高、压力大时冒一句很短的自言自语。两条链的触发条件与出口语义都不同，不合并。
+
+| # | 要点 | 代码落点 | 验证 |
+| --- | --- | --- | --- |
+| 1 | 内在活动强度 = `0.5·\|pleasure\| + 0.2·arousal + 0.3·stress + jitter·0.1`，达到 `threshold` 才出声 | `computeThinkIntensity` / `evaluateThink` | L5 平缓时不出声；高强度下 1–2 条 |
+| 2 | 独立通道：`ExpressionKind = 'speak' \| 'think'`，走同一组表达出口 | `ExpressionEvent` / `host.ts` 环境节拍 | 出口收到 `kind: 'think'` |
+| 3 | **不写事件、不进记忆、不占正式回复**；只留 `think.lastAt` 节流锚点 | `index.ts` 的 `thinkPlan` | `countEvents().total` 不变，`memoryHit` 仍为 false |
+| 4 | 每轮 ≤2 条、单条 ≤40 字，归一化里写死上限 | `config.ts` 的 think 归一化 / `clip` | 配置写 9 条 / 99 字会被收敛到 2 / 40 |
+| 5 | 最小间隔 `min_gap_min` 节流，避免变成背景噪声 | `thinkPlan` 读取 `think.lastAt` | 间隔内第二次评估返回 `null` |
+| 6 | 条数与选句都由种子派生，可复现 | `evaluateThink` 的 `seed` | 同种子两次结果一致 |
+| 7 | 与主动开口共用一条环境节拍，但开关独立 | `host.ts` 的 `ambientTimer` | 只开 think 也会评估；只关心 speak 时 think 不产出 |
+
+验证基线：`tests/think.test.ts` **5 项**。当前 `npm test` <!--docsync:test_count-->299<!--/docsync--> 项全绿。
+
+> 已知缺口：尽管叫"思考"，它并不挂在模型回合的 thinking 阶段，而是独立节拍上的自我对话；文案仍是模板池，后续接模型生成时可替换 `THINK_LINES` 而不动节流与出口。
+
+### 14.12 L3 证据表（DEF-08）
+
+L3（防御成熟度 / 偏差权重 / 应对策略）原来只有归一化，没有可信的写入路径。按外部意见"先只写证据、不改权重"分两步走：
+
+| # | 阶段 | 规则 | 代码落点 | 验证 |
+| --- | --- | --- | --- | --- |
+| 1 | 证据 | 每批新事件写一条 `layer='L3'`、`delta=0` 的证据；同一批事件只记一次（锚点存 meta） | `evolvePersona` 的 L3 段 + `l3.evidence_anchor` | 单批事件防御成熟度不变、证据 +1 |
+| 2 | 方向 | 用**锚点之后的新事件**算加权平均情绪，避免七天均值把方向抹平 | `batchAvgPleasure` | 两正一负不推动权重 |
+| 3 | 转正 | 同向证据累计达到 `l3_evidence_min_repeats`（默认 3）才动一格；正向 +`step`，负向 −`step/2` | `l3_evidence_step` | 第 3 次同向才 +0.02 |
+| 4 | 记账 | 转正额外写一条带 `delta` 的证据作为下次统计起点；变更写 `target='L3'` 演化日志（含 before/after） | `appendEvolution` | 可回滚、可追溯 |
+| 5 | 未动 | `biasWeights` / `copingStrategies` 仍只做归一化，不随单次事件改值 | — | 外部意见"证据先行" |
+
+验证基线：`tests/l3-evidence.test.ts` **3 项**。证据表上限仍由 `personality.evidence_cap` 控制。
+
+---
+
+### 14.13 记忆冲突并列展示（DEF-09）
+
+冲突的判定与写入在 `linkNewEvent`（共享标签 + 极性相反 + 差值 ≥ 0.4 → 双向 `contradiction` 边，不覆盖摘要/标签/情绪）。展示分两处，口径一致：**并列，不裁决**。
+
+| # | 位置 | 规则 | 代码落点 | 验证 |
+| --- | --- | --- | --- | --- |
+| 1 | 注入上下文 | `[联想]` 块把 `contradiction` 边标成「另一种说法」，与普通联想区分 | `src/index.ts` 联想块 | 冲突事件不会只出现一边 |
+| 2 | 星图数据 | 事件节点带 `meta.contradictions`：对面事件的 `id / label / emotion / pleasure / createdAt`；无冲突时不出字段，最多并列 5 条 | `buildStarMap` + `contradictionPeers` | 双方互相指到对方，且带当时的愉悦值 |
+| 3 | 星图详情 | 打开事件节点时，「两种说法」把本条与对面的标题、感受、时间并排渲染，不给结论 | `web/star-map/index.html#renderContradictions` | 无冲突事件不出现该区块 |
+
+验证基线：`tests/star-map-contradiction.test.ts` **3 项**（互相指认、无冲突不出字段、5 条上限）。
+
+---
+
+### 14.14 历史事件重放与极性标定（DEF-01 第三步）
+
+`npm run polarity:replay -- --events` 直接重放库里的历史事件，不需要极性日志已经攒够：
+
+| # | 环节 | 规则 | 代码落点 |
+| --- | --- | --- | --- |
+| 1 | 取数 | 只读打开 `brain/hippocampus/index/memory.db`；按角色取事件 | `readStoredEvents` |
+| 2 | 文本 | 优先用 `fulltext/<角色>/<事件>.txt` 原文，缺失时退回 `title + summary` | `readStoredEvents` |
+| 3 | 复算 | 对原文重跑 `analyzeSentiment`，与入库时的 `emo_pleasure` 分开统计 | `replayEvents` |
+| 4 | 对照 | 输出「入库判定 / 复算判定」两组分布 + 入库判正、复算判负的前 5 条 | `main` |
+
+**真实库结果（2026-11-10，112 条）**：复算负 5 / 中性 68 / 正 39（负向占比 4.5%），入库时负 0 / 中性 21 / 正 91；命中词 Top 为「好 × 29」「喜欢 × 12」「爱 × 5」，负向只有「担心 × 4」「累 / 没意思 / 失败 各 1」。结论：**「全正」主要是语料本身偏中性/正向**，旧算法对没有任何情绪词的文本也给了小幅正值（91 正 vs 复算 39 正），不是符号饱和；参数无需重标定。
+
+**顺带修掉一个误判（重放才暴露）**：`靠不靠谱` 这类 X 不 X 反问，否定字夹在词中间，旧逻辑把第二次出现的「靠谱」判成被否定的正向词，整句落到 −0.9。现在反问两端都不算命中，`不靠谱` 仍判负、`他很靠谱` 仍判正。
+
+验证基线：`tests/polarity-replay.test.ts` **5 项**（含事件重放两条）、`tests/emotion.test.ts` 反问用例 1 项。
 
 ---
 
@@ -1699,8 +1780,12 @@ security.connector_token（≥16 字符，显式固定，多机/容器用）
 - [x] 记忆与情感闭环已修复（§14.7，当时测试 103 项全绿：情绪量程、回忆重构、情感回落、L2 锚点、超级节点、存量显著性、同题口径）
 - [x] 性格多样性演化已落地（§4.8 / §14.8，`tests/personality.test.ts` 9 项）
 - [x] 行为动机已落地（§14.9，`tests/motivation.test.ts` 14 项；人格双通路 + 零信号收口）
-- [x] 主动开口已落地（§14.10，`tests/speak.test.ts` 20 项；思念饱和 + 欲言又止 + 三重兜底 + 出口抽象 + 桌面场景感知 + 首次开启锚点；**代码默认仍为关闭，本机 `config.yaml` 已显式开启并调为活跃档**，当前 `npm test` 203 项全绿）
-- [x] 适配性 / 联动性自检 18 项全绿（§14.4，`npm run check:link`：PASS 18 / WARN 0 / FAIL 0，需先 `npm run build`）
+- [x] 主动开口已落地（§14.10，`tests/speak.test.ts` 20 项；思念饱和 + 欲言又止 + 三重兜底 + 出口抽象 + 桌面场景感知 + 首次开启锚点；**代码默认仍为关闭，本机 `config.yaml` 已显式开启并调为活跃档**，当前 `npm test` <!--docsync:test_count-->299<!--/docsync--> 项全绿）
+- [x] 思考碎碎念已落地（§14.11，`tests/think.test.ts` 5 项；独立 think 通道、不写事件、不影响 `memoryHit`、每轮 ≤2 条且单条 ≤40 字，与主动开口共用节拍但开关独立）
+- [x] L3 证据表已落地（§14.12，`tests/l3-evidence.test.ts` 3 项；单批事件只写 delta=0 证据，同向 ≥3 次才转正并写演化日志）
+- [x] speak 影子模式与统计已落地（§14.10，`tests/speak-shadow.test.ts` 3 项；影子评估不投递不写状态，按日聚合 act/hold/silent）
+- [x] 连接器清单与协议校验已落地（§12.3，`tests/connector-registry.test.ts` 4 项；适配器自带 `connector.json`，核心不硬编码版本）
+- [x] 适配性 / 联动性自检 <!--docsync:check_items-->22<!--/docsync--> 项全绿（§14.4，`npm run check:link`：PASS <!--docsync:check_items-->22<!--/docsync--> / WARN 0 / FAIL 0，需先 `npm run build`）
 - [x] 真实数据复测：`emotion_history` **24 行 / 55 条事件**（2026-11-06）；负面极性仍为 0，待更强负面语料
 - [ ] L3 认知偏差权重 / 应对策略的写入路径（当前只有 `defenseMaturity` 会变，`biasWeights` / `copingStrategies` 仅被归一化，无新增条目）
 - [ ] G1–G5 验收标准可测，且不依赖人工主观判断的部分已明确

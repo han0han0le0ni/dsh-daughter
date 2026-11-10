@@ -47,6 +47,11 @@ association:
   # 一条字面都没命中时，从"当下情绪最像、时间最近"的记忆顺一跳（§8.2）；
   # 换对话框后的第一句也靠它续接"上一个对话的结尾"。关掉即完全沉默。
   fallback_when_no_match: true
+  # 记忆冲突（DEF-09）：同一话题下两条记忆情绪相反时，双方各写一条 contradiction 链接。
+  # 只加链接、不改摘要和标签——「上次说喜欢、这次说讨厌」两份说法并存，不覆盖任何一方。
+  contradiction_enabled: true
+  # 触发矛盾所需的最小 pleasure 差（两条必须一正一负）；调小会更敏感，也更容易误判
+  contradiction_min_gap: 0.4
 
 # 窗口只是"工位"，不是记忆分区：换到另一个对话框，刚在别处说的话仍会被想起（§8.2）
 continuity:
@@ -103,6 +108,17 @@ skills:
   min_associated_score: 0.15
   # 一轮里至少用到几个工具，才把这次工具序列沉淀成技能草稿（§9.1 draft）
   min_steps_to_learn: 2
+  # 影子池（DEF-19）：候选版本在同一任务上并行记账，够样本且胜率过线才转正
+  #   - 只有带工具证据的轮次才算样本（"被激活即成功"是自证，不能当训练信号）
+  #   - 转正前会把旧版本整体快照进 previous，可用 rollbackSkill 精确回滚
+  shadow:
+    enabled: true
+    # 最少有效样本（强制 ≥3，避免一次成功就转正）
+    min_samples: 10
+    # 候选胜率下限
+    win_rate: 0.6
+    # 候选胜率要比在用版本高出多少，避免"两边一样好"也转正
+    margin: 0.1
 
 # 行为动机：决策层把"文本相似度"换成动机评分
 #   - 人格只调信号通道的阈值，不直接改分数
@@ -185,6 +201,25 @@ speak:
   carry_decay: 0.02          # 没到 hold 时自然消退
   carry_max: 0.25            # 累积上限
   jitter: 0.04               # 抖动幅度，避免像定时任务
+  shadow: false              # 影子模式：照常评估只记统计，不投递也不写冷却/计数
+  stats: true                # 按日记录 act/hold/silent 计数，面板看沉默占比
+
+# 外部连接器（DEF-03）：核心只认来源白名单与协议版本，适配器本体在 connectors/ 下。
+# 每个适配器可放 connectors/<source>/connector.json：
+#   { "source": "qq", "protocol": 1, "version": "1.2.0" }
+# 协议版本与核心不一致时该来源会被拒绝；没有清单则按白名单放行（保持旧版兼容）。
+connectors:
+  ingest_sources: [qq, douyin_dm, douyin_content, minecraft, game, android, system]
+  manifests_dir: connectors
+
+# 思考碎碎念（DEF-23）：一个人待着时冒出的短句，只走表达出口。
+# 不写事件、不进入记忆、不占正式回复；与主动开口各自独立开关。
+think:
+  enabled: true
+  max_per_turn: 2            # 一次评估最多几条（上限 2）
+  max_chars: 40              # 单条最大字数（上限 40）
+  min_gap_min: 20            # 两次碎碎念之间的最小间隔
+  threshold: 0.55            # 内在活动强度达到多少才嘟囔
 
 # 表达出口：她主动说的话发给谁
 #   - 多个出口可同时开，并发投递；任一出口失败不影响其它出口

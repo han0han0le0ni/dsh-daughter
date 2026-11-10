@@ -295,7 +295,8 @@ export function evaluateSpeak(ctx: SpeakContext, config: DaughterConfig, options
     ...(text ? { text } : {}),
   });
 
-  if (!s.enabled) return plan('silent');
+  // 影子模式要能独立于正式开关工作：先看几天"她会说什么"，再决定开不开
+  if (!s.enabled && !s.shadow) return plan('silent');
   // 刚说过话，先安静一会儿
   if (ctx.sinceLastSpeakMinutes !== null && ctx.sinceLastSpeakMinutes < s.refractory_min) return plan('silent');
   // 沉默还不够久，没到想说话的时候

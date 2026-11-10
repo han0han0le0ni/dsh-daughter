@@ -14,6 +14,7 @@ import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, wr
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createDaughterPlugin } from '../src/index.js';
+import { syncDocs } from './docs-sync.js';
 import { loadConfig } from '../src/config.js';
 import { Store } from '../src/store.js';
 import { normalizeBodySignal, pickMotionByPad } from '../src/runtime/body-link.js';
@@ -570,6 +571,15 @@ async function main(): Promise<void> {
     });
     if (absent.length > 0) throw new Error(`缺少静态资源：${absent.join(', ')}`);
     return `apply/inject 正常，patch 引用 ${refs.length} 个文件 + ${required.length} 个发布资源齐全`;
+  });
+
+  await check('文档数字与代码一致（docs-sync 占位符）', () => {
+    const drift = syncDocs(process.cwd(), false);
+    if (drift.length > 0) {
+      const detail = drift.map((item) => `${item.file}（${item.keys.join(' / ')}）`).join('，');
+      throw new Error(`文档数字漂移：${detail}；运行 npm run docs:sync`);
+    }
+    return 'docs/*.md 占位符与 package.json / tests / link-check 一致';
   });
 
   /* ------------------------------ 收尾 ------------------------------ */

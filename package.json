@@ -1,6 +1,6 @@
 {
   "name": "dsh-daughter",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "人格—记忆—状态—技能—反射 五维陪伴插件，用于 DSH 人格演变；记忆跨窗口贯通带时间感，请勿在正式工作对话中开启 / Persona evolution plugin for DSH; memory spans windows with time-awareness, keep off work chats",
   "type": "module",
   "license": "MIT",
@@ -53,6 +53,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --import tsx --test tests/*.test.ts",
     "check:link": "node --import tsx scripts/link-check.ts",
+    "docs:sync": "node --import tsx scripts/docs-sync.ts",
+    "polarity:replay": "node --import tsx scripts/polarity-replay.ts",
     "filter:sweep": "node --import tsx scripts/filter-sweep.ts",
     "reset": "node --import tsx scripts/reset.ts",
     "memory:doctor": "node --import tsx scripts/memory-doctor.ts",

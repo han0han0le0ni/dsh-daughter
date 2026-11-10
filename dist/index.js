@@ -9,13 +9,15 @@ import { decideIngest } from './runtime/filter.js';
 import { analyzeSentiment, carryL5, createInitialL5, selectSubpersona, sentimentPolarity, updateL5, } from './runtime/state.js';
 import { assignThread, isDialogueSource, pruneOpenThreads } from './runtime/threading.js';
 import { evaluateSpeak, localDayKey } from './runtime/speak.js';
+import { recordSpeakStats } from './runtime/speak-stats.js';
+import { evaluateThink } from './runtime/think.js';
 import { readForeground } from './runtime/desktop-observe.js';
 import { containsDiagnosisLabel, evaluateSafety } from './runtime/safety.js';
 import { logPolarity, prunePolarityLog } from './runtime/polarity-log.js';
 import { SURPRISE_REASON, applySurprise, associateEvents, extractEvent, linkNewEvent, pickAssociationSeed, recallDrift, reconstructOnRecall, retrieveEvents, } from './runtime/memory.js';
 import { NO_MATCH_CONSTRAINT, NO_MEMORY_CONSTRAINT, activateSkills, buildBlocks, buildCrossWindowDigest, buildEventDigest, buildPersonaText, buildThreadDigest, buildRelationText, buildSkillDigest, buildStateHint, clipBlocks, matchReflex, quotePriority, WORKING_STYLE, } from './runtime/content.js';
 import { applyPersonalitySignal } from './runtime/personality.js';
-import { applyPersonaDrift, buildPersonProfiles, buildStarMap, buildThingProfiles, bumpSkill, learnDraftSkill, maybeFreezeSkill, runTick, } from './runtime/maintenance.js';
+import { applyPersonaDrift, buildPersonProfiles, buildStarMap, buildThingProfiles, bumpSkill, observeShadow, learnDraftSkill, maybeFreezeSkill, runTick, } from './runtime/maintenance.js';
 /** §6.1 时延预算：超时只告警与记日志，不做硬中断（SQLite 同步查询无法中途取消） */
 const RETRIEVE_BUDGET_MS = 150;
 const BEFORE_PROMPT_BUDGET_MS = 100;
@@ -239,7 +241,9 @@ class Daughter {
                 const seed = hit.path && hit.path.length > 1 ? candidateById.get(hit.path[0]) : undefined;
                 const bridge = seed ? `，由「${truncate(seed.title, 12)}」想到` : '';
                 const hops = hit.depth ?? 1;
-                return `- 【${event.id}】${relativeTime(event.createdAt, now)}｜${truncate(event.title, 24)}｜${truncate(event.summary, 60)}（${hit.via.kind}${bridge}，${hops} 跳）`;
+                // DEF-09：矛盾链接要和普通联想分开说，让两边说法并列出现，而不是挑一条当事实
+                const relation = hit.via.kind === 'contradiction' ? '另一种说法' : hit.via.kind;
+                return `- 【${event.id}】${relativeTime(event.createdAt, now)}｜${truncate(event.title, 24)}｜${truncate(event.summary, 60)}（${relation}${bridge}，${hops} 跳）`;
             })
                 .join('\n')}`
             : '';
@@ -400,7 +404,10 @@ class Daughter {
             if (openThreads) {
                 store.saveOpenThreads(pruneOpenThreads(openThreads, now, this.config.threading.activity_ttl_minutes, 6, this.config.threading.closed_retention_minutes));
             }
-            linkNewEvent(store, event);
+            linkNewEvent(store, event, 3, {
+                enabled: this.config.association.contradiction_enabled,
+                minGap: this.config.association.contradiction_min_gap,
+            });
         }
         const cache = this.promptCache.get(sessionKey(ctx));
         const skillsUpdated = [];
@@ -445,6 +452,8 @@ class Daughter {
                         at: now,
                     });
                 }
+                // 影子池（DEF-19）：同一轮的工具证据顺带判候选版本；没有证据的轮次不记样本
+                observeShadow(store, updated, toolsUsed, this.config, now);
                 const freeze = maybeFreezeSkill(store, updated, this.config, now);
                 if (freeze.evolutionId)
                     evolutionIds.push(freeze.evolutionId);
@@ -655,8 +664,12 @@ class Daughter {
         // 来源要在建事件时就定：参与者、显著性都要按来源推导，事后改 source 已经来不及
         const event = extractEvent(input.ctx, input.text, '', l5, this.rng, input.source);
         const ingested = this.ingest(store, event, input.text);
-        if (ingested.action === 'keep')
-            linkNewEvent(store, event);
+        if (ingested.action === 'keep') {
+            linkNewEvent(store, event, 3, {
+                enabled: this.config.association.contradiction_enabled,
+                minGap: this.config.association.contradiction_min_gap,
+            });
+        }
         this.logger.debug('ingest_external_event', {
             source: input.source,
             eventId: ingested.eventId,
@@ -671,14 +684,33 @@ class Daughter {
         }
         return result;
     }
+    /** 最近活跃会话的 L5 快照：回答"她此刻在跟谁相处"，供开口/碎碎念共用 */
+    latestL5State(characterId) {
+        const store = this.store(characterId);
+        let latest = null;
+        let latestAt = Number.NEGATIVE_INFINITY;
+        for (const sessionId of store.listL5Sessions()) {
+            const candidate = store.loadL5(sessionId);
+            if (!candidate)
+                continue;
+            const at = Date.parse(candidate.lastTickAt);
+            if (Number.isFinite(at) && at > latestAt) {
+                latestAt = at;
+                latest = candidate;
+            }
+        }
+        return latest;
+    }
     /**
      * 主动开口评估：没人说话的时候，她想不想开口。
      * 决策在 `runtime/speak.ts` 里是纯函数，这里只负责取上下文、读写
      * "今天说了几次 / 憋了多久"，投递（气泡、面板）交给宿主。
      */
     async speakPlan(input) {
-        if (!this.config.speak.enabled)
+        // 影子模式也要评估：它本来就是用来"先看会说什么"的
+        if (!this.config.speak.enabled && !this.config.speak.shadow)
             return null;
+        const shadow = this.config.speak.shadow;
         const nowMs = Date.parse(input.now);
         if (!Number.isFinite(nowMs))
             return null;
@@ -688,27 +720,17 @@ class Daughter {
         if (store.getMeta('speak.bootAt') === null)
             store.setMeta('speak.bootAt', input.now);
         // 用最近活跃的会话当"她此刻在跟谁说话"
-        let latestL5 = null;
-        let latestAt = Number.NEGATIVE_INFINITY;
-        for (const sessionId of store.listL5Sessions()) {
-            const candidate = store.loadL5(sessionId);
-            if (!candidate)
-                continue;
-            const at = Date.parse(candidate.lastTickAt);
-            if (Number.isFinite(at) && at > latestAt) {
-                latestAt = at;
-                latestL5 = candidate;
-            }
-        }
+        const latestL5 = this.latestL5State(input.characterId);
         const l5 = latestL5 ? this.effective(input.characterId, latestL5, input.now) : undefined;
         const lastAtRaw = store.getMeta('speak.lastAt');
         // 第一次评估（刚打开开关）先当"刚联系过"：否则沉默几小时后一开启就冒一句，
         // 像定时任务而不是想起你。之后交给冷却与 min_idle 管。
-        if (lastAtRaw === null) {
+        // 影子模式不写冷却锚点：只观察，不能改变真实开口的节奏。
+        if (!shadow && lastAtRaw === null) {
             store.setMeta('speak.lastAt', input.now);
             return null;
         }
-        const lastAtMs = Date.parse(lastAtRaw);
+        const lastAtMs = lastAtRaw === null ? Number.NaN : Date.parse(lastAtRaw);
         const sinceLastSpeakMinutes = Number.isFinite(lastAtMs) ? Math.max(0, (nowMs - lastAtMs) / 60_000) : null;
         // 沉默时长以"最后一次对话"为准；没有对话记录时退到安装锚点
         const anchorRaw = latestL5?.lastTickAt ?? store.getMeta('speak.bootAt') ?? input.now;
@@ -750,6 +772,22 @@ class Daughter {
             recentLines,
             seed: `${input.characterId}:${localDayKey(input.now)}:${todayCount}:${Math.round(idleMinutes)}`,
         });
+        // 统计先记账：影子模式与正式模式都记，面板才能看到真实的沉默比例
+        if (this.config.speak.stats) {
+            store.setMeta('speak.stats', recordSpeakStats(store.getMeta('speak.stats'), plan, localDayKey(input.now), input.now));
+        }
+        // 影子模式到此为止：不写冷却、不写日计数、不写记忆、不搬 carry——
+        // 观察动作本身不能改变被观察的行为。
+        if (shadow) {
+            this.logger.debug('speak_shadow', {
+                decision: plan.decision,
+                reason: plan.reason,
+                urge: Number(plan.urge.toFixed(3)),
+                threshold: Number(plan.threshold.toFixed(3)),
+                idleMinutes: Math.round(idleMinutes),
+            });
+            return { ...plan, shadow: true };
+        }
         store.setMeta('speak.carry', String(plan.carry));
         if (plan.decision === 'act') {
             store.setMeta('speak.lastAt', input.now);
@@ -786,6 +824,41 @@ class Daughter {
             const holdKey = `speak.hold.${localDayKey(input.now)}`;
             store.setMeta(holdKey, String(store.getMetaNumber(holdKey, 0) + 1));
         }
+        return plan;
+    }
+    /**
+     * 碎碎念评估（DEF-23）：只返回短句，**不写事件、不推关系、不占正式回复**。
+     * 决策在 `runtime/think.ts` 里是纯函数；这里只管节流锚点与上下文。
+     */
+    async thinkPlan(input) {
+        if (!this.config.think.enabled)
+            return null;
+        const nowMs = Date.parse(input.now);
+        if (!Number.isFinite(nowMs))
+            return null;
+        const store = this.store(input.characterId);
+        const lastAtRaw = store.getMeta('think.lastAt');
+        const lastAtMs = lastAtRaw === null ? Number.NaN : Date.parse(lastAtRaw);
+        const sinceLastThinkMinutes = Number.isFinite(lastAtMs)
+            ? Math.max(0, (nowMs - lastAtMs) / 60_000)
+            : null;
+        const latest = this.latestL5State(input.characterId);
+        const l5 = latest ? this.effective(input.characterId, latest, input.now) : undefined;
+        const minute = Math.floor(nowMs / 60_000);
+        const plan = evaluateThink({
+            now: input.now,
+            l5,
+            sinceLastThinkMinutes,
+            jitter: input.jitter,
+        }, this.config, { seed: `${input.characterId}:think:${minute}` });
+        if (!plan)
+            return null;
+        store.setMeta('think.lastAt', input.now);
+        this.logger.debug('think_act', {
+            reason: plan.reason,
+            intensity: Number(plan.intensity.toFixed(3)),
+            count: plan.lines.length,
+        });
         return plan;
     }
     /**

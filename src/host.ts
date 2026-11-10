@@ -6,6 +6,7 @@ import { loadConfig, mergeConfig, resolveDataRoot } from './config.js';
 import { createDaughterPlugin } from './index.js';
 import { normalizeBodySignal } from './runtime/body-link.js';
 import { authorizeConnectorRequest, ensureConnectorToken, tokenHeader } from './runtime/connector-auth.js';
+import { loadIngestRegistry } from './runtime/connector-registry.js';
 import { registerDesktopObserveTool } from './runtime/desktop-observe.js';
 import { registerDesktopInputTool } from './runtime/desktop-input.js';
 import { MoodMotionGate } from './runtime/mood-motion.js';
@@ -337,12 +338,15 @@ const EXTERNAL_SOURCES = new Set<EventRecord['source']>([
   'system',
 ]);
 
-/** 解析 `/connectors/<source>/ingest`，非法来源返回 null */
-export function parseExternalIngestPath(url: string): EventRecord['source'] | null {
+/** 解析 `/connectors/<source>/ingest`：来源必须在允许集合内，否则返回 null */
+export function parseExternalIngestPath(
+  url: string,
+  allowed: ReadonlySet<EventRecord['source']> = EXTERNAL_SOURCES,
+): EventRecord['source'] | null {
   const matched = /^\/connectors\/([a-z_]+)\/ingest$/.exec(url);
   if (!matched) return null;
   const source = matched[1] as EventRecord['source'];
-  return EXTERNAL_SOURCES.has(source) ? source : null;
+  return allowed.has(source) ? source : null;
 }
 
 function startBridge(
@@ -351,7 +355,13 @@ function startBridge(
   config: DaughterConfig,
   logger: Logger,
   token: string,
+  pluginRoot: string,
 ): { close: () => void } {
+  // 连接器清单只在启动时读一次：适配器升级后重启宿主即可生效，运行期不碰磁盘
+  const ingest = loadIngestRegistry(pluginRoot, config);
+  if (ingest.rejected.length > 0) {
+    logger.warn('dsh-daughter: 部分外部连接器清单被拒绝', { rejected: ingest.rejected });
+  }
   // 令牌由 createHost 解析一次后传进来：运行期不再读盘，配置改动随下次装载生效
   if (!token) {
     logger.warn('dsh-daughter: 桥接端点无令牌可用，所有 /vpet/* 请求将被拒绝');
@@ -427,7 +437,7 @@ function startBridge(
           sendJson(res, 200, { ok: true, accepted: true, latestSeq: vpetState.status().latestSeq });
           return;
         }
-        const externalSource = parseExternalIngestPath(url);
+        const externalSource = parseExternalIngestPath(url, ingest.sources);
         if (req.method === 'POST' && externalSource) {
           const payload = (await readBody(req)) as { text?: unknown };
           const text = String(payload.text ?? '').trim();
@@ -901,47 +911,87 @@ export function createHost(
       }, TICK_INTERVAL_MS);
       if (typeof (timer as { unref?: () => void }).unref === 'function') timer.unref();
 
-      // 主动开口用独立节拍：维护半小时一次够用，但"她什么时候开口"需要更细的粒度。
-      // 关闭时不注册定时器——关掉的功能不该留一个空转的 timer。
-      const speakTimer = config.speak.enabled
+      // 主动开口与碎碎念共用一条环境节拍：任一方开启就注册。
+      // 两者的开关各自独立——关掉主动开口不代表连自言自语也要关。
+      const ambientEnabled = config.speak.enabled || config.think.enabled;
+      const ambientIntervalMin = config.speak.enabled ? config.speak.check_interval_min : 5;
+      const ambientTimer = ambientEnabled
         ? setInterval(() => {
             const now = new Date().toISOString();
             // §6.1 禁止直接调用 Math.random：抖动由「角色 + 分钟」派生，
             // 同一分钟重复评估得到同一个值，"她这次为什么开口"因此可复现。
             const minute = Math.floor(Date.parse(now) / 60_000);
-            const jitter = createRng(hashText(`${config.character_id}:speak:${minute}`))() * 2 - 1;
-            plugin
-              .speakPlan({ characterId: config.character_id, now, jitter })
-              .then(async (plan) => {
-                // hold 是她"想说但忍住了"，只留在存储里累积压力，不打扰任何人
-                if (!plan || plan.decision !== 'act' || !plan.text) return;
-                const result = await dispatchExpression(
-                  {
-                    kind: 'speak',
-                    characterId: config.character_id,
-                    at: now,
-                    text: plan.text,
-                    reason: plan.reason,
-                    intensity: Number(plan.urge.toFixed(3)),
-                  },
-                  expressionSinks,
-                );
-                if (result.failed > 0) {
-                  logger.warn('dsh-daughter: 表达投递部分失败', {
-                    failed: result.failed,
-                    delivered: result.delivered,
-                    errors: result.errors,
-                  });
-                }
-              })
-              .catch((error) => logger.warn('dsh-daughter: 主动开口评估失败', { error: String(error) }));
-          }, Math.max(60_000, config.speak.check_interval_min * 60_000))
+            const speakJitter = createRng(hashText(`${config.character_id}:speak:${minute}`))() * 2 - 1;
+            const thinkJitter = createRng(hashText(`${config.character_id}:think:${minute}`))() * 2 - 1;
+
+            const speakTask = !config.speak.enabled
+              ? Promise.resolve()
+              : plugin
+                  .speakPlan({ characterId: config.character_id, now, jitter: speakJitter })
+                  .then(async (plan) => {
+                    // hold 是她"想说但忍住了"，只留在存储里累积压力，不打扰任何人
+                    // shadow 是影子模式：只记统计，不投递
+                    if (!plan || plan.decision !== 'act' || !plan.text || plan.shadow) return;
+                    const result = await dispatchExpression(
+                      {
+                        kind: 'speak',
+                        characterId: config.character_id,
+                        at: now,
+                        text: plan.text,
+                        reason: plan.reason,
+                        intensity: Number(plan.urge.toFixed(3)),
+                      },
+                      expressionSinks,
+                    );
+                    if (result.failed > 0) {
+                      logger.warn('dsh-daughter: 表达投递部分失败', {
+                        failed: result.failed,
+                        delivered: result.delivered,
+                        errors: result.errors,
+                      });
+                    }
+                  })
+                  .catch((error) => logger.warn('dsh-daughter: 主动开口评估失败', { error: String(error) }));
+
+            // 碎碎念（DEF-23）：只走表达出口，不写事件、不进入记忆，不占正式回复
+            const thinkTask = !config.think.enabled
+              ? Promise.resolve()
+              : plugin
+                  .thinkPlan({ characterId: config.character_id, now, jitter: thinkJitter })
+                  .then(async (plan) => {
+                    if (!plan || plan.lines.length === 0) return;
+                    for (const text of plan.lines) {
+                      const result = await dispatchExpression(
+                        {
+                          kind: 'think',
+                          characterId: config.character_id,
+                          at: now,
+                          text,
+                          reason: plan.reason,
+                          intensity: Number(plan.intensity.toFixed(3)),
+                        },
+                        expressionSinks,
+                      );
+                      if (result.failed > 0) {
+                        logger.warn('dsh-daughter: 碎碎念投递部分失败', {
+                          failed: result.failed,
+                          errors: result.errors,
+                        });
+                      }
+                    }
+                  })
+                  .catch((error) => logger.warn('dsh-daughter: 碎碎念评估失败', { error: String(error) }));
+
+            void Promise.all([speakTask, thinkTask]);
+          }, Math.max(60_000, ambientIntervalMin * 60_000))
         : null;
-      if (speakTimer && typeof (speakTimer as { unref?: () => void }).unref === 'function') speakTimer.unref();
+      if (ambientTimer && typeof (ambientTimer as { unref?: () => void }).unref === 'function') {
+        ambientTimer.unref();
+      }
 
       const offStarMap = registerStarMapPanel(ctx, plugin, pluginRoot, config.character_id, logger);
 
-      const bridge = startBridge(plugin, pluginContext({ id: EXTERNAL_SESSION_ID }, 0), config, logger, connectorToken);
+      const bridge = startBridge(plugin, pluginContext({ id: EXTERNAL_SESSION_ID }, 0), config, logger, connectorToken, pluginRoot);
       const offVpetControl = registerVpetControlTool(ctx, { logger, guard: toolGate, token: connectorToken });
       const offDesktopObserve =
         config.desktop?.enabled === false
@@ -964,7 +1014,7 @@ export function createHost(
 
       return () => {
         clearInterval(timer);
-        if (speakTimer) clearInterval(speakTimer);
+        if (ambientTimer) clearInterval(ambientTimer);
         if (douyinTimer) clearInterval(douyinTimer);
         if (douyinKick) clearTimeout(douyinKick);
         petWorkForward = null;

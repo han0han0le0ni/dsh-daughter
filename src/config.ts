@@ -38,6 +38,8 @@ export const defaultConfig: DaughterConfig = {
     max_injected: 2,
     hop_decay: 0.6,
     fallback_when_no_match: true,
+    contradiction_enabled: true,
+    contradiction_min_gap: 0.4,
   },
   continuity: {
     enabled: true,
@@ -75,6 +77,12 @@ export const defaultConfig: DaughterConfig = {
     min_main_score: 0.25,
     min_associated_score: 0.15,
     min_steps_to_learn: 2,
+    shadow: {
+      enabled: true,
+      min_samples: 10,
+      win_rate: 0.6,
+      margin: 0.1,
+    },
   },
   motivation: {
     enabled: true,
@@ -128,6 +136,25 @@ export const defaultConfig: DaughterConfig = {
     carry_decay: 0.02,
     carry_max: 0.25,
     jitter: 0.04,
+    // 影子模式默认关：本机已经调到活跃档，先按真实节奏跑；想调参时再打开
+    shadow: false,
+    // 统计默认开：只记计数不记正文，代价可以忽略
+    stats: true,
+  },
+  think: {
+    // 碎碎念默认开：它不占正式回复，只是一句很短的自言自语
+    enabled: true,
+    // 一次评估最多两条；再多就从"碎碎念"变成刷屏
+    max_per_turn: 2,
+    max_chars: 40,
+    // 二十分钟内不会重复嘟囔
+    min_gap_min: 20,
+    threshold: 0.55,
+  },
+  connectors: {
+    // 通用收件口允许的来源；QQ/MC 之类的适配器放在 connectors/<source>/ 下自带清单
+    ingest_sources: ['qq', 'douyin_dm', 'douyin_content', 'minecraft', 'game', 'android', 'system'],
+    manifests_dir: 'connectors',
   },
   expression: {
     enabled: true,
@@ -212,6 +239,9 @@ export const defaultConfig: DaughterConfig = {
       attachment_priors: { secure: 0.7, anxious: 0.18, avoidant: 0.12 },
     },
     evidence_cap: 200,
+    // L3 证据表（DEF-08）：先攒证据，同向重复够多才动防御成熟度；单次事件不改权重
+    l3_evidence_min_repeats: 3,
+    l3_evidence_step: 0.02,
   },
   desktop: {
     // 默认关闭（§12.2）：桌面连接器能给的是屏幕画面与键鼠注入，
@@ -398,6 +428,15 @@ function normalizeConfig(config: DaughterConfig): DaughterConfig {
   );
   config.skills.min_steps_to_learn = Math.min(8, Math.max(2, Math.round(num(config.skills.min_steps_to_learn, 2))));
 
+  const shadow = config.skills.shadow ?? { ...defaultConfig.skills.shadow };
+  config.skills.shadow = {
+    enabled: shadow.enabled !== false,
+    // 样本数下限强制 ≥3，否则「1 次成功」就能转正
+    min_samples: Math.max(3, Math.round(num(shadow.min_samples, 10))),
+    win_rate: Math.min(1, Math.max(0, num(shadow.win_rate, 0.6))),
+    margin: Math.min(1, Math.max(0, num(shadow.margin, 0.1))),
+  };
+
   if (!config.motivation || typeof config.motivation !== 'object') {
     config.motivation = structuredClone(defaultConfig.motivation);
   }
@@ -490,6 +529,32 @@ function normalizeConfig(config: DaughterConfig): DaughterConfig {
   const quietEnd = Math.min(24, Math.max(0, Math.round(num(quietRaw[1], 7))));
   speak.quiet_hours = [quietStart, quietEnd];
 
+  if (!config.think || typeof config.think !== 'object') {
+    config.think = structuredClone(defaultConfig.think);
+  }
+  const think = config.think;
+  think.enabled = think.enabled !== false;
+  // 上限写死在归一化里：「每轮 ≤2 条、≤40 字」是对外约定，不交给配置随意放大
+  think.max_per_turn = Math.min(2, Math.max(1, Math.round(num(think.max_per_turn, 2))));
+  think.max_chars = Math.min(40, Math.max(8, Math.round(num(think.max_chars, 40))));
+  think.min_gap_min = clampRange(think.min_gap_min, 1, 240, 20);
+  think.threshold = clampRange(think.threshold, 0, 1, 0.55);
+
+  if (!config.connectors || typeof config.connectors !== 'object') {
+    config.connectors = structuredClone(defaultConfig.connectors);
+  }
+  const connectors = config.connectors;
+  const sources = Array.isArray(connectors.ingest_sources)
+    ? connectors.ingest_sources
+    : defaultConfig.connectors.ingest_sources;
+  // 来源统一成小写下划线：适配器清单和 URL 两边写法不一致时不该靠猜
+  connectors.ingest_sources = [...new Set(
+    sources
+      .map((source) => String(source).trim().toLowerCase())
+      .filter((source) => /^[a-z][a-z0-9_]*$/.test(source)),
+  )];
+  connectors.manifests_dir = String(connectors.manifests_dir ?? 'connectors').trim() || 'connectors';
+
   if (!config.expression || typeof config.expression !== 'object') {
     config.expression = structuredClone(defaultConfig.expression);
   }
@@ -540,6 +605,11 @@ function normalizeConfig(config: DaughterConfig): DaughterConfig {
 
   config.association.max_depth = Math.min(3, Math.max(1, Math.round(num(config.association.max_depth, 2))));
   config.association.fallback_when_no_match = config.association.fallback_when_no_match !== false;
+  config.association.contradiction_enabled = config.association.contradiction_enabled !== false;
+  config.association.contradiction_min_gap = Math.max(
+    0,
+    Math.min(1.5, num(config.association.contradiction_min_gap, 0.4)),
+  );
   config.budget.max_total_tokens = Math.max(200, Math.round(num(config.budget.max_total_tokens, 3000)));
   config.safety.thresholds.stress_level1 = num(config.safety.thresholds.stress_level1, 0.7);
   config.safety.thresholds.safety_level2 = num(config.safety.thresholds.safety_level2, 0.35);

@@ -280,11 +280,23 @@ export function extractEvent(ctx, userText, assistantText, l5, rng, source = 'ch
  * `linkProximity` 的 0.6/0.3 于是对所有候选都成立，这个维度彻底失去区分度。
  */
 const MAX_LINKS_PER_EVENT = 12;
+/** 默认开启（保持旧调用方语义不变），低于 0.4 的 pleasure 差太容易误判 */
+const DEFAULT_CONTRADICTION = { enabled: true, minGap: 0.4 };
+/**
+ * 记忆冲突（DEF-09）：同主题 + 相反极性 = 两种说法。
+ *
+ * 只看 `emotionAtTime.pleasure` 的符号与差值，不读文本、不改任何事实字段——
+ * 冲突是「并存」而不是「覆盖」，谁对谁错留给展示层并列给出。
+ */
+export function isContradiction(a, b, minGap) {
+    const gap = a.emotionAtTime.pleasure - b.emotionAtTime.pleasure;
+    return a.emotionAtTime.pleasure * b.emotionAtTime.pleasure < 0 && Math.abs(gap) >= minGap;
+}
 /**
  * 新事件入库后，与最近的相似事件建立弱链接（双向，最多 maxLinks 条）。
- * 相似度 = 共享标签 + 共享人物 ×0.5 + 7 天内 ×0.2。
+ * 相似度 = 共享标签 + 共享人物 ×0.5 + 7 天内 ×0.2；同主题且极性相反时记为 contradiction。
  */
-export function linkNewEvent(store, event, maxLinks = 3) {
+export function linkNewEvent(store, event, maxLinks = 3, contradiction = DEFAULT_CONTRADICTION) {
     if (event.links.length >= MAX_LINKS_PER_EVENT)
         return 0;
     const candidates = store.listAllEvents().filter((candidate) => candidate.id !== event.id &&
@@ -295,8 +307,10 @@ export function linkNewEvent(store, event, maxLinks = 3) {
         const sharedTags = candidate.tags.filter((tag) => event.tags.includes(tag)).length;
         const sharedPeople = candidate.participants.filter((person) => person && event.participants.includes(person)).length;
         const recent = daysBetween(candidate.createdAt, event.createdAt) <= 7 ? 1 : 0;
-        const score = sharedTags + sharedPeople * 0.5 + recent * 0.2;
-        const kind = sharedTags > 0 ? 'topic' : 'person';
+        // 冲突必须落在同一话题上：两张无关的桌子「开心/难过」不构成矛盾
+        const conflicting = contradiction.enabled && sharedTags > 0 && isContradiction(event, candidate, contradiction.minGap);
+        const score = sharedTags + sharedPeople * 0.5 + recent * 0.2 + (conflicting ? 0.6 : 0);
+        const kind = conflicting ? 'contradiction' : sharedTags > 0 ? 'topic' : 'person';
         return { candidate, score, kind };
     })
         .filter((item) => item.score > 0)
@@ -304,7 +318,8 @@ export function linkNewEvent(store, event, maxLinks = 3) {
         .slice(0, Math.min(maxLinks, MAX_LINKS_PER_EVENT - event.links.length));
     let created = 0;
     for (const { candidate, score, kind } of scored) {
-        const strength = Math.min(1, score / 3);
+        // 矛盾链接带一点底强度，保证它不会被同话题的普通链接顶掉
+        const strength = kind === 'contradiction' ? Math.min(1, 0.5 + Math.abs(event.emotionAtTime.pleasure - candidate.emotionAtTime.pleasure) * 0.3) : Math.min(1, score / 3);
         if (!event.links.some((link) => link.targetId === candidate.id)) {
             const forward = { targetId: candidate.id, kind, strength };
             event.links.push(forward);

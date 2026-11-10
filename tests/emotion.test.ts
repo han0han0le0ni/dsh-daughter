@@ -5,7 +5,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { defaultConfig } from '../src/config.js';
 import { Store } from '../src/store.js';
-import { createInitialL5, sentimentPolarity, sentimentStrength, updateL5 } from '../src/runtime/state.js';
+import {
+  analyzeSentiment,
+  createInitialL5,
+  sentimentPolarity,
+  sentimentStrength,
+  updateL5,
+} from '../src/runtime/state.js';
 import { relaxL5 } from '../src/runtime/maintenance.js';
 import { linkNewEvent } from '../src/runtime/memory.js';
 import type { DaughterConfig, EventRecord, L5State } from '../src/types.js';
@@ -66,6 +72,43 @@ test('§8.3 情绪极性：口语负面与否定前缀', () => {
   assert.ok(sentimentPolarity('今天不开心') < 0, '"不开心"不能被算成开心');
   assert.ok(sentimentPolarity('不太舒服') < 0, '"不舒服"应判负');
   assert.ok(sentimentPolarity('还行，谢谢你') > 0, '正常致谢仍算正面');
+});
+
+test('DEF-01 程度分级：「有点烦」与「崩溃」不再都判成 -1', () => {
+  const slight = sentimentPolarity('有点烦');
+  const intense = sentimentPolarity('崩溃');
+
+  assert.ok(slight < 0 && slight > -0.35, `轻度负面应弱，实际 ${slight}`);
+  assert.ok(Math.abs(slight + 0.2) < 0.05, `「有点烦」应约 -0.2，实际 ${slight}`);
+  assert.ok(intense < -0.8, `「崩溃」应约 -0.9，实际 ${intense}`);
+  assert.ok(intense < slight, '极端词必须比程度轻微的更负');
+  assert.ok(sentimentStrength('有点烦') < sentimentStrength('崩溃'), '强度也应拉开');
+});
+
+test('DEF-01 程度分级：加强词抬升、单句多命中叠加但仍被 clamp', () => {
+  assert.ok(sentimentPolarity('很烦') < sentimentPolarity('烦'), '"很"应加强负面');
+  assert.ok(sentimentPolarity('比较开心') > sentimentPolarity('有点开心'), '"比较"应强于"有点"');
+  assert.equal(sentimentPolarity('非常非常崩溃'), -1, '叠加后应被 clamp 到 -1');
+});
+
+test('DEF-01 反问不误判：「靠不靠谱」不再算满强度负面', () => {
+  assert.equal(sentimentPolarity('靠不靠谱'), 0, 'X不X 问的是"是否"，不是否定');
+  assert.equal(sentimentPolarity('开不开心'), 0, '反问里的另一个词同样不吃命中');
+  assert.ok(sentimentPolarity('不靠谱') < -0.2, '真否定仍要判负');
+  assert.ok(sentimentPolarity('他很靠谱') > 0.2, '正常正面命中不受影响');
+  assert.equal(analyzeSentiment('靠不靠谱').hits.length, 0, '反问不该留命中词，日志才不会误导');
+});
+
+test('DEF-01 PAD 派生：极性由 pleasure 回算，唤醒只看命中总量', () => {
+  const positive = analyzeSentiment('特别开心');
+  const negative = analyzeSentiment('特别难受');
+
+  assert.equal(positive.polarity, positive.pad.pleasure, '极性应等于派生 pleasure');
+  assert.ok(positive.pad.arousal > 0.5, `强情绪应抬高唤醒，实际 ${positive.pad.arousal}`);
+  assert.ok(positive.pad.dominance > 0 && negative.pad.dominance < 0, '掌控感应随极性走');
+  assert.equal(analyzeSentiment('').polarity, 0, '空白句不产生极性');
+  assert.equal(analyzeSentiment('').strength, 0);
+  assert.equal(analyzeSentiment('有点烦').degrees['烦'], 0.64, '程度倍数应可离线复算');
 });
 
 test('§8.3 情绪推进：连续负面输入让 pleasure 落到负半轴', () => {

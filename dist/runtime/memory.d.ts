@@ -57,8 +57,19 @@ export declare function reconstructOnRecall(store: Store, event: EventRecord, l5
  */
 export declare function participantsFor(source: EventRecord['source'], audience?: 'to_father' | 'to_stranger' | 'alone'): string[];
 export declare function extractEvent(ctx: PluginContext, userText: string, assistantText: string, l5: L5State, rng: () => number, source?: EventRecord['source']): EventRecord;
+export interface ContradictionOptions {
+    enabled: boolean;
+    minGap: number;
+}
+/**
+ * 记忆冲突（DEF-09）：同主题 + 相反极性 = 两种说法。
+ *
+ * 只看 `emotionAtTime.pleasure` 的符号与差值，不读文本、不改任何事实字段——
+ * 冲突是「并存」而不是「覆盖」，谁对谁错留给展示层并列给出。
+ */
+export declare function isContradiction(a: EventRecord, b: EventRecord, minGap: number): boolean;
 /**
  * 新事件入库后，与最近的相似事件建立弱链接（双向，最多 maxLinks 条）。
- * 相似度 = 共享标签 + 共享人物 ×0.5 + 7 天内 ×0.2。
+ * 相似度 = 共享标签 + 共享人物 ×0.5 + 7 天内 ×0.2；同主题且极性相反时记为 contradiction。
  */
-export declare function linkNewEvent(store: Store, event: EventRecord, maxLinks?: number): number;
+export declare function linkNewEvent(store: Store, event: EventRecord, maxLinks?: number, contradiction?: ContradictionOptions): number;

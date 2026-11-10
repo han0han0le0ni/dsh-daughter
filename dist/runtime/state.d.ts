@@ -1,4 +1,4 @@
-import type { DaughterConfig, L4Contextual, L5State, PersonaBundle, SubPersona } from '../types.js';
+import type { DaughterConfig, L4Contextual, L5State, PadState, PersonaBundle, SubPersona } from '../types.js';
 export declare function createInitialL5(characterId: string, sessionId: string, now: string, persona: PersonaBundle, overdraft: number): L5State;
 /**
  * 跨会话接力：换对话框后不是从基线重新出生，而是把上一段的 L5 按闲置时长向基线回落。
@@ -12,6 +12,10 @@ export declare function selectSubpersona(l4: L4Contextual, preferredId?: string)
 export interface SentimentDetail {
     polarity: number;
     strength: number;
+    /** 词表派生出的 PAD 增量（未按 L5 衰减），供 L5 推进与日志离线复算 */
+    pad: PadState;
+    /** 命中词 → 程度倍数；1 表示没吃到程度词 */
+    degrees: Record<string, number>;
     /** 所有命中的情绪词（含被否定的正面词），供日志排查 */
     hits: string[];
     /** 命中的否定词 */
@@ -22,9 +26,13 @@ export interface SentimentDetail {
     negatives: string[];
 }
 /**
- * 情绪识别明细（A1 日志层）：极性/强度仍然是原公式的输出，
- * 只是把命中词、否定词一并带出来，供 logs/polarity 离线标定。
- * 不改 `sentimentPolarity` / `sentimentStrength` 的返回语义。
+ * 情绪识别明细（DEF-01 派生改造）。
+ *
+ * 词表 → 带符号和程度的命中项 → PAD 增量 → 极性/强度由 PAD 回算：
+ * - `pleasure` 直接决定极性，「有点烦」≈ -0.20、「崩溃」≈ -0.90，不再都判成 -1；
+ * - `arousal` 只看命中总量，正负情绪都会唤醒；
+ * - `dominance` 随极性走，负面情绪压低掌控感。
+ * 空白句返回全零，不产生任何情绪推进。命中词与程度倍数一并带出，供 logs/polarity 离线复算。
  */
 export declare function analyzeSentiment(text: string): SentimentDetail;
 export declare function sentimentPolarity(text: string): number;

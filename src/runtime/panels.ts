@@ -2,6 +2,7 @@ import type { L1Baseline, L2Relationship, L3Cognition, L4Contextual, PersonaBund
 import type { Store } from '../store.js';
 import { DEFAULT_L1, DEFAULT_L2, DEFAULT_L3, DEFAULT_L4 } from '../store.js';
 import { localDayKey } from './speak.js';
+import { readSpeakStats } from './speak-stats.js';
 
 /**
  * 星图只读信息栏：把人格 L1–L4、运行时 L5、安全、存储统计与演化日志摊平成参数行。
@@ -415,6 +416,18 @@ function speakGroup(store: Store, now: string): StarMapGroup {
 
   const lastAt = store.getMeta('speak.lastAt');
   if (lastAt) params.push({ key: 'speak.lastAt', label: '上次开口', value: lastAt, kind: 'text' });
+
+  // DEF-18：沉默比例是调阈值的依据；只有真的评估过才显示，避免面板出现误导性的 0%
+  const stats = readSpeakStats(store.getMeta('speak.stats'), day);
+  if (stats.total > 0) {
+    params.push({ key: 'speak.stats.total', label: '今天评估次数', value: stats.total, kind: 'number' });
+    params.push({
+      key: 'speak.stats.silent',
+      label: '沉默占比',
+      value: `${Math.round(stats.silentRatio * 100)}%`,
+      kind: 'text',
+    });
+  }
 
   const raw = store.getMeta('speak.history');
   if (raw) {

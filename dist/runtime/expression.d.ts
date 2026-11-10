@@ -1,7 +1,10 @@
 import type { ExpressionSinkConfig } from '../types.js';
 import type { Logger } from '../util.js';
-/** 表达事件的种类；目前只有"她主动说的话"，动作与状态后续可扩展 */
-export type ExpressionKind = 'speak';
+/**
+ * 表达事件的种类：speak = 她主动说的话（正式开口）；
+ * think = 思考碎碎念（DEF-23），只在出口显示短句，不构成回复、不写记忆。
+ */
+export type ExpressionKind = 'speak' | 'think';
 export interface ExpressionEvent {
     kind: ExpressionKind;
     characterId: string;

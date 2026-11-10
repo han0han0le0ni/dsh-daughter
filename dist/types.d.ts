@@ -224,8 +224,48 @@ export interface SkillCard {
     failStreak?: number;
     /** 熔断解除时间：此前该技能只避不做，冷却按失败次数指数增长 */
     breakerUntil?: ISOTime;
+    /** 影子池（DEF-19）：候选版本在同一任务上并行记账，样本够且胜率过线才转正 */
+    shadow?: SkillShadow;
+    /** 转正前的上一版快照，用于精确回滚（内容寻址账本后置，这里先按版本快照） */
+    previous?: SkillSnapshot;
     updatedAt: ISOTime;
     schemaVersion: 1;
+}
+export interface SkillShadowConfig {
+    enabled: boolean;
+    /** 转正所需的最少有效样本（只有带工具证据的轮次才算样本） */
+    min_samples: number;
+    /** 候选在有效样本上的胜率下限 */
+    win_rate: number;
+    /** 候选胜率必须比在用版本高出多少（避免两边一样好就转正） */
+    margin: number;
+}
+/** 影子候选：只存替补内容与战绩，转正时才落到技能本体 */
+export interface SkillShadow {
+    patch: {
+        name?: string;
+        keywords?: string[];
+        steps?: SkillStep[];
+        requiredTools?: string[];
+        boundary?: SkillBoundary;
+    };
+    success: number;
+    fail: number;
+    since: ISOTime;
+}
+/** 技能快照：回滚时按字段精确恢复，不依赖任何外部状态 */
+export interface SkillSnapshot {
+    version: number;
+    name: string;
+    keywords: string[];
+    steps: SkillStep[];
+    requiredTools: string[];
+    boundary: SkillBoundary;
+    maturity: Unit;
+    successCount: number;
+    failCount: number;
+    status: SkillStatus;
+    savedAt: ISOTime;
 }
 export type AssetKind = 'MAC' | 'CON' | 'MOT' | 'CMB';
 export interface AssetPackage {
@@ -476,6 +516,15 @@ export interface DaughterPlugin {
         now: ISOTime;
         jitter?: number;
     }): Promise<SpeakPlan | null>;
+    /**
+     * 碎碎念评估（DEF-23）：只有短句，不写事件、不进入记忆。
+     * 返回 null 或 `lines` 为空表示这轮不嘟囔。
+     */
+    thinkPlan(input: {
+        characterId: string;
+        now: ISOTime;
+        jitter?: number;
+    }): Promise<ThinkPlan | null>;
     /** 星图面板：按当前库实时重算并落盘，返回节点/边/星系计数 */
     starMap(characterId: string, now: ISOTime): {
         nodes: number;
@@ -532,6 +581,28 @@ export interface SpeakPlan {
     text?: string;
     /** 本次用的文案下标，调用方可写回以避开连续重复 */
     lineIndex?: number;
+    /** 影子模式评估结果：只记账，不应被投递 */
+    shadow?: boolean;
+}
+/** 碎碎念的参数（DEF-23）：独立于主动开口，不占正式回复、不写事件 */
+export interface ThinkConfig {
+    enabled: boolean;
+    /** 一次评估最多几条（上限 2） */
+    max_per_turn: number;
+    /** 单条最大字数（上限 40） */
+    max_chars: number;
+    /** 两次碎碎念之间的最小间隔（分钟） */
+    min_gap_min: number;
+    /** 内在活动强度下限 0..1，达到才嘟囔 */
+    threshold: number;
+}
+/** 一次碎碎念的产出；lines 为空表示这轮没想说话 */
+export interface ThinkPlan {
+    lines: string[];
+    /** 内在活动强度 0..1 */
+    intensity: number;
+    /** 复用的动机分类，决定文案池 */
+    reason: SpeakReason;
 }
 /**
  * 主动开口的参数。默认高频检查、低频开口：
@@ -571,6 +642,13 @@ export interface SpeakConfig {
     carry_max: number;
     /** 外部注入的抖动幅度，避免像定时任务一样精确 */
     jitter: number;
+    /**
+     * 影子模式（DEF-18）：照常评估、只记统计，不投递也不写冷却/计数。
+     * 用来先观察"她会沉默多少轮"，避免一上线就太吵。
+     */
+    shadow: boolean;
+    /** 是否记录 act/hold/silent 的按日聚合，供面板看沉默比例 */
+    stats: boolean;
 }
 /**
  * 出口配置。`vpet` 走游戏的事件队列；`pet` 走 DSH 内置桌宠（dsh-pet）的路由；
@@ -687,6 +765,13 @@ export interface PolarityLogEntry {
     padAfter: PadState;
     source: EventRecord['source'];
 }
+/** 外部连接器（DEF-03）：核心只负责收件，适配器自己在 connectors/ 下带清单 */
+export interface ConnectorsConfig {
+    /** 允许通过 `/connectors/<source>/ingest` 写入的来源；不在表内的来源一律 404 */
+    ingest_sources: string[];
+    /** 适配器清单目录（相对 pluginRoot），每个适配器一个 `connector.json` */
+    manifests_dir: string;
+}
 export interface DaughterConfig {
     version: number;
     character_id: string;
@@ -741,6 +826,10 @@ export interface DaughterConfig {
         hop_decay: number;
         /** 字面检索一条都没命中时，用最近事件当种子跑一跳联想（"想不起对应的事，就从近的事顺下去"） */
         fallback_when_no_match: boolean;
+        /** 同主题 + 相反极性时给双方各写一条 contradiction 链接（只加链接，不覆盖任何事实字段） */
+        contradiction_enabled: boolean;
+        /** 触发矛盾所需的最小 pleasure 差：必须一正一负且相差到这个值（DEF-09） */
+        contradiction_min_gap: number;
     };
     /**
      * 窗口只是"工位"，不是记忆分区：跨窗口的时间感与"刚在别处说的话"都由这里控制。
@@ -800,6 +889,8 @@ export interface DaughterConfig {
         min_associated_score: number;
         /** 一轮里至少用到几个工具才沉淀成技能草稿（<2 视为 2） */
         min_steps_to_learn: number;
+        /** 影子池（DEF-19）：候选版本并行记账，样本够 + 胜率过线才转正 */
+        shadow: SkillShadowConfig;
     };
     /**
      * 行为动机：决策层用动机评分替代单一文本相似度。
@@ -808,6 +899,13 @@ export interface DaughterConfig {
     motivation: MotivationConfig;
     /** 主动开口：空下来多久会忍不住说话。与 motivation 共用同一套人格/情绪输入 */
     speak: SpeakConfig;
+    /** 思考碎碎念（DEF-23）：短句独立通道，不占正式回复、不写事件 */
+    think: ThinkConfig;
+    /**
+     * 外部连接器（DEF-03）：适配器本体外置在 `connectors/` 下，
+     * 核心只认"来源白名单 + 协议版本"，不把 QQ/MC 之类的版本写死在这里。
+     */
+    connectors: ConnectorsConfig;
     /** 表达出口：她主动说的话发给谁（游戏桌宠 / HTTP 应用 / JSONL） */
     expression: ExpressionConfig;
     reflex: {
@@ -902,6 +1000,10 @@ export interface DaughterConfig {
             };
         };
         evidence_cap: number;
+        /** L3 证据表（DEF-08）：同向重复多少次才允许动防御成熟度 */
+        l3_evidence_min_repeats: number;
+        /** 每次转正调整的步长；负向只走一半，避免一次低谷就否定长期成长 */
+        l3_evidence_step: number;
     };
     desktop: {
         enabled: boolean;

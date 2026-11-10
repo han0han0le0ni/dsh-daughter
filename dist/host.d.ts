@@ -28,7 +28,7 @@ interface HostCtx {
         requestRejection(req: IncomingMessage): number | undefined;
     };
 }
-/** 解析 `/connectors/<source>/ingest`，非法来源返回 null */
-export declare function parseExternalIngestPath(url: string): EventRecord['source'] | null;
+/** 解析 `/connectors/<source>/ingest`：来源必须在允许集合内，否则返回 null */
+export declare function parseExternalIngestPath(url: string, allowed?: ReadonlySet<EventRecord['source']>): EventRecord['source'] | null;
 export declare function createHost(ctx: HostCtx, rawConfig: unknown, pluginRoot: string): ReturnType<typeof createDaughterPlugin>;
 export {};

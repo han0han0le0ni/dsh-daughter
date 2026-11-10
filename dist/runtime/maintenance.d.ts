@@ -31,11 +31,36 @@ export declare function runTick(store: Store, config: DaughterConfig, now: strin
  * 连续对话时几乎不生效，隔夜才会明显回落——这也是「情绪会自己淡下去」的样子。
  */
 export declare function relaxL5(store: Store, config: DaughterConfig, now: string): number;
-export declare function evolvePersona(store: Store, now: string): string[];
+export declare function evolvePersona(store: Store, now: string, config?: DaughterConfig): string[];
 export declare function applyPersonaDrift(store: Store, config: DaughterConfig, persona: PersonaBundle, polarity: number, now: string): {
     changed: boolean;
     evolutionId?: string;
 };
+export interface ShadowResult {
+    skill: SkillCard;
+    /** 是否记到了一次有效样本（有工具证据的轮次才算） */
+    recorded: boolean;
+    promoted: boolean;
+    samples: number;
+    /** 候选版本在有效样本上的胜率；没有影子时为 0 */
+    shadowWinRate: number;
+    /** 在用版本的胜率（粗略口径：累计成功 / 累计使用） */
+    primaryWinRate: number;
+    reason: string;
+}
+/**
+ * 影子池观察（DEF-19）。
+ *
+ * 候选版本在「同一任务」上并行记账：判定用严格口径（候选的 requiredTools 必须全部出现在本轮证据里），
+ * 在用版本仍用宽松口径（任一命中）。**没有工具证据的轮次不记样本**——那种"被激活即成功"是自证，
+ * 拿它当训练信号会把候选一路托到转正。
+ *
+ * 转正三条件：样本 ≥ min_samples、胜率 ≥ win_rate、且比在用版本高出 margin。
+ * 转正前把旧版本整体快照进 `previous`，`rollbackSkill` 可精确恢复。
+ */
+export declare function observeShadow(store: Store, skill: SkillCard, toolsUsed: string[], config: DaughterConfig, now: string): ShadowResult;
+/** 回滚到上一版快照（只回滚一级；恢复后清掉快照，避免来回抖动） */
+export declare function rollbackSkill(store: Store, skillId: string, now: string): SkillCard | null;
 /**
  * 技能成熟度累计（§9.1 状态机）：
  * draft 首次成功 → active；连续失败 5 次 → deprecated；其余保持原状态。
