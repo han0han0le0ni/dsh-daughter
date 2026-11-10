@@ -93,8 +93,9 @@ export function carryL5(
 }
 
 export function updateL5(prev: L5State, text: string, now: string, persona: PersonaBundle): L5State {
-  const polarity = sentimentPolarity(text);
-  const strength = sentimentStrength(text);
+  const detail = analyzeSentiment(text);
+  const polarity = detail.polarity;
+  const strength = detail.strength;
   const exclamatory = /[!！?？]/.test(text);
   const stressDelta = countHits(text, STRESS_WORDS) > 0 ? 0.12 : -0.04;
   const fatigueDelta = countHits(text, FATIGUE_WORDS) > 0 ? 0.06 : 0.008;
@@ -138,12 +139,65 @@ export function selectSubpersona(l4: L4Contextual, preferredId?: string): SubPer
   return personas.reduce((best, item) => (item.weight > best.weight ? item : best), personas[0]!);
 }
 
-export function sentimentPolarity(text: string): number {
+export interface SentimentDetail {
+  polarity: number;
+  strength: number;
+  /** 所有命中的情绪词（含被否定的正面词），供日志排查 */
+  hits: string[];
+  /** 命中的否定词 */
+  negations: string[];
+  /** 未被否定的正面词 */
+  positives: string[];
+  /** 命中的负面词 */
+  negatives: string[];
+}
+
+/** 同一句话里至少有一次未被否定的出现，才算正面命中 */
+function hasUnnegated(text: string, word: string): boolean {
+  let from = 0;
+  for (;;) {
+    const index = text.indexOf(word, from);
+    if (index < 0) return false;
+    if (!isNegated(text, index)) return true;
+    from = index + 1;
+  }
+}
+
+function matchedWords(text: string, words: string[]): string[] {
+  return words.filter((word) => Boolean(word) && text.includes(word));
+}
+
+/**
+ * 情绪识别明细（A1 日志层）：极性/强度仍然是原公式的输出，
+ * 只是把命中词、否定词一并带出来，供 logs/polarity 离线标定。
+ * 不改 `sentimentPolarity` / `sentimentStrength` 的返回语义。
+ */
+export function analyzeSentiment(text: string): SentimentDetail {
+  const allPositive = matchedWords(text, POSITIVE_WORDS);
+  const positives = allPositive.filter((word) => hasUnnegated(text, word));
+  const negatives = matchedWords(text, NEGATIVE_WORDS);
+  const negations = matchedWords(text, NEGATION_WORDS);
+
   const pos = weightedHits(text, POSITIVE_WORDS, true);
   // 被否定的正面词反过来算负面："不开心""没意思""不舒服"都在说不好
   const neg = weightedHits(text, NEGATIVE_WORDS) + negatedHits(text, POSITIVE_WORDS);
-  if (pos === 0 && neg === 0) return 0;
-  return clampPad((pos - neg) / Math.max(1, pos + neg));
+  const polarity = pos === 0 && neg === 0 ? 0 : clampPad((pos - neg) / Math.max(1, pos + neg));
+
+  const total = weightedHits(text, POSITIVE_WORDS) + weightedHits(text, NEGATIVE_WORDS);
+  const strength = clamp01(total / 2);
+
+  return {
+    polarity,
+    strength,
+    hits: [...new Set([...allPositive, ...negatives])],
+    negations,
+    positives,
+    negatives,
+  };
+}
+
+export function sentimentPolarity(text: string): number {
+  return analyzeSentiment(text).polarity;
 }
 
 /**
@@ -206,8 +260,7 @@ function negatedHits(text: string, words: string[]): number {
  * 两个多字词命中即视为满强度。
  */
 export function sentimentStrength(text: string): number {
-  const total = weightedHits(text, POSITIVE_WORDS) + weightedHits(text, NEGATIVE_WORDS);
-  return clamp01(total / 2);
+  return analyzeSentiment(text).strength;
 }
 
 export function countHits(text: string, words: string[]): number {

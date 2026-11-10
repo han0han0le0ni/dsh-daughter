@@ -250,6 +250,7 @@ export const defaultConfig: DaughterConfig = {
       patterns: ['</', '｜｜', 'DSML', 'invoke>', 'calls>', '<|', '|＞'],
     },
   },
+  polarity_log: { enabled: true, retention_days: 90, include_text_hash: true },
   emotion_relax: {
     enabled: true,
     rate_per_hour: 0.06,

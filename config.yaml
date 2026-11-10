@@ -314,6 +314,11 @@ decay:
   link_min_strength: 0.05
 
 # 情绪回落：闲置越久，L5 越靠近下面的基线；连续对话时几乎不生效（§14.7）
+polarity_log:
+  enabled: true
+  retention_days: 90
+  include_text_hash: true
+
 emotion_relax:
   enabled: true
   rate_per_hour: 0.06
