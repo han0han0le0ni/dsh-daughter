@@ -36,4 +36,4 @@
 - 0.7.1 → 0.8.0 只新增设置 schema 与反馈面板，不改记忆/人格/情绪算法，旧数据无需迁移。
 - 安装后先在「插件配置」里确认开关状态；原先改在 `config.yaml` 的值仍是基线，宿主表单只保存差异。
 - 若希望反馈自动进入仓库意见区，需用户本机具备 GitHub 登录态；否则走预填链接，功能不阻塞。
-- 发布状态：代码已提交 `41fa442` 并推送 main；注解 tag `v0.8.0` 已推送；GitHub Release 已发布（更新公告：https://github.com/han0han0le0ni/dsh-daughter/releases/tag/v0.8.0）。npm 发布与市场索引 `market/index.json` 更新仍待执行（需先拿到 npm `time[0.8.0]`）。
+- 发布状态：代码已提交 `41fa442` 并推送 main；注解 tag `v0.8.0` 已推送；GitHub Release 已发布（更新公告：https://github.com/han0han0le0ni/dsh-daughter/releases/tag/v0.8.0）。npm `0.8.0` 已发布（`time[0.8.0]=2026-11-16T17:20:31.508Z`，unix `1794849631`），市场索引 `market/index.json` 已登记该版本并指向提交 `41fa442`。
