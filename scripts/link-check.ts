@@ -560,7 +560,7 @@ async function main(): Promise<void> {
     if (missing.length > 0) throw new Error(`patch 引用了不存在的文件：${missing.join(', ')}`);
 
     // package.json 的 files 列表里点名的静态资源必须真实存在
-    const required = ['index.js', 'client.js', 'config.yaml', 'icon.svg', 'locale/zh.json', 'locale/en.json', 'web/star-map/index.html', 'dist/host.js'];
+    const required = ['index.js', 'client.js', 'config.yaml', 'icon.svg', 'locale/zh.json', 'locale/en.json', 'web/star-map/index.html', 'web/feedback/index.html', 'web/settings/index.html', 'dist/host.js'];
     const absent = required.filter((file) => {
       try {
         statSync(join(process.cwd(), file));

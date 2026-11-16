@@ -1,5 +1,5 @@
-// dsh-daughter 的浏览器侧入口：在侧边栏「面板」列表里加一个「脑星图」按钮，
-// 点开后由宿主的主栏渲染一张同源 iframe（/star-map/），数据由插件自带的路由提供。
+// dsh-daughter 的浏览器侧入口：侧边栏只保留「脑星图」；
+// 「daughter设置」与「意见反馈」都放在 DSH 设置弹窗的同一个分区里。
 // 模式与 dsh-thoughtdag / dsh-synapse 一致：window.__ModuleLoader__.load +
 // inject 声明依赖的客户端服务。
 window.__ModuleLoader__.load({
@@ -26,15 +26,15 @@ window.__ModuleLoader__.load({
         document.head.append(style);
       }
       style.textContent =
-        '.dsh-dd-frame{display:block;width:100%;height:100%;min-height:100%;border:0;background:#06070b}';
+        '.dsh-dd-frame{display:block;width:100%;height:100%;min-height:100%;border:0;background:transparent}';
 
       if (!React || !ctx.slots || !ctx.locale || typeof ctx.effect !== 'function') {
-        console.warn('[dsh-daughter] 当前宿主没有面板插槽，脑星图只能通过 /star-map/ 访问');
+        console.warn('[dsh-daughter] 当前宿主没有面板插槽，页面只能通过 /star-map/、/feedback/、/daughter-settings/ 访问');
         return;
       }
 
       const h = React.createElement;
-      const PanelIcon = ({ size }) =>
+      const StarIcon = ({ size }) =>
         h(
           'svg',
           { width: size ?? 16, height: size ?? 16, viewBox: '0 0 16 16', 'aria-hidden': 'true' },
@@ -42,22 +42,40 @@ window.__ModuleLoader__.load({
           h('circle', { cx: 8, cy: 8, r: 2.2, fill: '#f0a35a' }),
           h('circle', { cx: 13.2, cy: 4.4, r: 1.4, fill: '#a99cff' }),
         );
-      const PanelPage = () => h('iframe', { className: 'dsh-dd-frame', title: '脑星图', src: '/star-map/' });
+      const StarPage = () => h('iframe', { className: 'dsh-dd-frame', title: '脑星图', src: '/star-map/' });
+      const SettingsPage = () => h('iframe', { className: 'dsh-dd-frame', title: 'daughter设置', src: '/daughter-settings/' });
 
       ctx.effect(
-        () => ctx.locale.register(NS, { zh: { panel: '脑星图' }, en: { panel: 'Star Map' } }),
+        () => ctx.locale.register(NS, {
+          zh: { panel: '脑星图', settings: 'daughter设置' },
+          en: { panel: 'Star Map', settings: 'daughter Settings' },
+        }),
         'dsh-daughter:dictionaries',
       );
       const t = ctx.locale.bind(NS);
       ctx.slots.inject('main', () =>
-        ctx.slots.register({ name: 'main', key: 'daughter-starmap', locale: NS, inject: () => ({}) }, PanelPage),
+        ctx.slots.register({ name: 'main', key: 'daughter-starmap', locale: NS, inject: () => ({}) }, StarPage),
       );
       ctx.slots.inject('sidebar.panellist', () =>
         ctx.slots.register(
           { name: 'sidebar.panellist', id: 'daughter-starmap', order: 31, locale: NS, label: () => t('panel') },
-          PanelIcon,
+          StarIcon,
         ),
       );
+      // DSH 原生设置弹窗左侧的一级分区：功能开关 + 意见反馈
+      ctx.slots.inject('settings.section', function* () {
+        yield ctx.slots.register(
+          {
+            name: 'settings.section',
+            id: 'dsh-daughter-settings',
+            order: 152,
+            locale: NS,
+            label: () => t('settings'),
+            inject: () => ({}),
+          },
+          SettingsPage,
+        );
+      });
     };
 
     return module.exports;

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { isAbsolute, join } from 'node:path';
 import { loadConfig, mergeConfig, resolveDataRoot } from './config.js';
@@ -9,12 +9,14 @@ import { authorizeConnectorRequest, ensureConnectorToken } from './runtime/conne
 import { loadIngestRegistry } from './runtime/connector-registry.js';
 import { registerDesktopObserveTool } from './runtime/desktop-observe.js';
 import { registerDesktopInputTool } from './runtime/desktop-input.js';
+import { feedbackQueuePath, feedbackStatus, retryPendingFeedback, submitFeedback, } from './runtime/feedback.js';
 import { MoodMotionGate } from './runtime/mood-motion.js';
 import { VpetBridgeState } from './runtime/vpet-events.js';
 import { buildExpressionSinks, dispatchExpression } from './runtime/expression.js';
 import { readDouyinMemory, renderDouyinEventText, resolveDouyinDbPath } from './runtime/douyin-link.js';
 import { PET_MOOD_ANIM, createPetAnimSink, createPetSink, petBaseUrlOf, petWorkAnimFor, probePet } from './runtime/pet-link.js';
 import { registerVpetControlTool } from './runtime/vpet-control.js';
+import { coerceSetting, deletePath, getPath, setPath, settingField, settingsSnapshot, } from './runtime/settings-ui.js';
 import { createRng, hashText } from './util.js';
 /** 取宿主准入结论：没服务、签名不对、抛错都按 403 处理。 */
 function admissionRejection(ctx, req) {
@@ -433,11 +435,36 @@ function startBridge(plugin, pluginContext, config, logger, token, pluginRoot) {
     server.listen(BRIDGE_PORT, '127.0.0.1', () => logger.info('dsh-daughter: 桥接端点已就绪', { port: BRIDGE_PORT }));
     return { close: () => server.close() };
 }
+/* ------------------------------ 设置覆盖 ------------------------------ */
+function settingsOverridePath(pluginRoot, config) {
+    return join(resolveDataRoot(pluginRoot, config), 'settings', 'overrides.json');
+}
+function readSettingsOverrides(path) {
+    try {
+        if (!existsSync(path))
+            return {};
+        const parsed = JSON.parse(readFileSync(path, 'utf8'));
+        return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+    }
+    catch {
+        return {};
+    }
+}
+function writeSettingsOverrides(path, overrides) {
+    mkdirSync(join(path, '..'), { recursive: true });
+    const temp = `${path}.tmp`;
+    writeFileSync(temp, JSON.stringify(overrides, null, 2) + '\n', 'utf8');
+    renameSync(temp, path);
+}
 /* ------------------------------ 插件入口 ------------------------------ */
 export function createHost(ctx, rawConfig, pluginRoot) {
     const logger = hostLogger(ctx);
     const base = loadConfig(pluginRoot, logger);
-    const config = mergeConfig(base, rawConfig);
+    const hostMerged = mergeConfig(base, rawConfig);
+    const overridePath = settingsOverridePath(pluginRoot, hostMerged);
+    const overrides = readSettingsOverrides(overridePath);
+    // 设置弹窗里的改动优先级最高：它晚于 config.yaml 与 cordis 补丁保存
+    const config = mergeConfig(hostMerged, overrides);
     // 连接器令牌只解析一次：桥接端点与桌面工具共用同一个值，
     // 拿不到令牌时是空字符串，服务端据此 fail closed（§12.2）
     const connectorToken = ensureConnectorToken(resolveDataRoot(pluginRoot, config), config.security?.connector_token, logger).token;
@@ -855,6 +882,8 @@ export function createHost(ctx, rawConfig, pluginRoot) {
                 ambientTimer.unref();
             }
             const offStarMap = registerStarMapPanel(ctx, plugin, pluginRoot, config.character_id, logger);
+            const offFeedback = registerFeedbackPanel(ctx, pluginRoot, config, logger);
+            const offSettings = registerSettingsPanel(ctx, pluginRoot, config, logger, overridePath, overrides, base);
             const bridge = startBridge(plugin, pluginContext({ id: EXTERNAL_SESSION_ID }, 0), config, logger, connectorToken, pluginRoot);
             const offVpetControl = registerVpetControlTool(ctx, { logger, guard: toolGate, token: connectorToken });
             const offDesktopObserve = config.desktop?.enabled === false
@@ -883,6 +912,8 @@ export function createHost(ctx, rawConfig, pluginRoot) {
                     clearTimeout(douyinKick);
                 petWorkForward = null;
                 offStarMap();
+                offFeedback();
+                offSettings();
                 offVpetControl();
                 offDesktopObserve();
                 offDesktopInput();
@@ -950,6 +981,167 @@ function registerStarMapPanel(ctx, plugin, pluginRoot, characterId, logger) {
     }
     catch (error) {
         logger.warn('dsh-daughter: 星图面板注册失败', { error: String(error) });
+        return () => { };
+    }
+}
+/** 意见反馈面板：本地留痕 + 有 GitHub 令牌时直接开 issue，没令牌时给预填链接 */
+function registerFeedbackPanel(ctx, pluginRoot, config, logger) {
+    const server = ctx.webServer;
+    if (!server || typeof server.register !== 'function') {
+        logger.warn('dsh-daughter: 无 webServer 服务，跳过意见反馈面板');
+        return () => { };
+    }
+    const queuePath = feedbackQueuePath(resolveDataRoot(pluginRoot, config));
+    let pluginVersion = '0.0.0';
+    try {
+        pluginVersion = JSON.parse(readFileSync(join(pluginRoot, 'package.json'), 'utf8')).version ?? '0.0.0';
+    }
+    catch {
+        // 版本号只是诊断信息，读不到不影响反馈提交
+    }
+    const meta = {
+        pluginVersion,
+        dshVersion: process.env.DSH_VERSION,
+        platform: process.platform,
+        arch: process.arch,
+        nodeVersion: process.version,
+    };
+    const readBody = async (req) => {
+        let text = '';
+        for await (const chunk of req) {
+            text += String(chunk);
+            if (text.length > 64 * 1024)
+                throw new Error('反馈内容过长');
+        }
+        return JSON.parse(text || '{}');
+    };
+    const handler = async (req, res) => {
+        const rejection = admissionRejection(ctx, req);
+        if (rejection !== undefined) {
+            res.statusCode = rejection;
+            res.end();
+            return;
+        }
+        const path = new URL(req.url ?? '/', 'http://dsh.local').pathname.replace(/\/+$/, '');
+        if (path === '/feedback/api/status' && req.method === 'GET') {
+            sendJson(res, 200, feedbackStatus(queuePath));
+            return;
+        }
+        if (path === '/feedback/api/submit' && req.method === 'POST') {
+            try {
+                const result = await submitFeedback(queuePath, await readBody(req), meta);
+                logger.info('dsh-daughter: 收到意见反馈', { id: result.id, status: result.status });
+                sendJson(res, 200, result);
+            }
+            catch (error) {
+                sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+            }
+            return;
+        }
+        if (path === '/feedback/api/retry' && req.method === 'POST') {
+            try {
+                const result = await retryPendingFeedback(queuePath, meta);
+                sendJson(res, 200, result);
+            }
+            catch (error) {
+                sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) });
+            }
+            return;
+        }
+        try {
+            const html = readFileSync(join(pluginRoot, 'web', 'feedback', 'index.html'), 'utf8');
+            res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+            res.end(html);
+        }
+        catch (error) {
+            sendJson(res, 404, { error: `意见反馈页面缺失：${String(error)}` });
+        }
+    };
+    try {
+        const dispose = ctx.effect(() => server.register({ kind: 'prefix', path: '/feedback', handler }), 'dsh-daughter:feedback');
+        logger.info('dsh-daughter: 意见反馈面板已挂载 /feedback');
+        return dispose;
+    }
+    catch (error) {
+        logger.warn('dsh-daughter: 意见反馈面板注册失败', { error: String(error) });
+        return () => { };
+    }
+}
+/** DSH 原生设置弹窗里的页面：功能开关 + 意见反馈，都走插件自带路由 */
+function registerSettingsPanel(ctx, pluginRoot, config, logger, overridePath, overrides, base) {
+    const server = ctx.webServer;
+    if (!server || typeof server.register !== 'function') {
+        logger.warn('dsh-daughter: 无 webServer 服务，跳过设置页面');
+        return () => { };
+    }
+    const readBody = async (req) => {
+        let text = '';
+        for await (const chunk of req) {
+            text += String(chunk);
+            if (text.length > 16 * 1024)
+                throw new Error('设置内容过长');
+        }
+        return JSON.parse(text || '{}');
+    };
+    const handler = async (req, res) => {
+        const rejection = admissionRejection(ctx, req);
+        if (rejection !== undefined) {
+            res.statusCode = rejection;
+            res.end();
+            return;
+        }
+        const path = new URL(req.url ?? '/', 'http://dsh.local').pathname.replace(/\/+$/, '');
+        if (path === '/daughter-settings/api/config' && req.method === 'GET') {
+            sendJson(res, 200, { fields: settingsSnapshot(config, overrides), overridePath });
+            return;
+        }
+        if (path === '/daughter-settings/api/config' && req.method === 'POST') {
+            try {
+                const body = (await readBody(req));
+                if (typeof body.path !== 'string')
+                    throw new Error('缺少设置项');
+                const field = settingField(body.path);
+                if (!field)
+                    throw new Error(`不支持的设置项：${body.path}`);
+                const target = config;
+                let value;
+                if (body.value === null) {
+                    deletePath(overrides, field.path);
+                    value = getPath(base, field.path);
+                    setPath(target, field.path, value);
+                }
+                else {
+                    value = coerceSetting(field, body.value);
+                    if (value === undefined)
+                        throw new Error(`设置值不合法：${field.label}`);
+                    setPath(overrides, field.path, value);
+                    setPath(target, field.path, value);
+                }
+                writeSettingsOverrides(overridePath, overrides);
+                logger.info('dsh-daughter: 设置已更新', { path: field.path, overridden: body.value !== null });
+                sendJson(res, 200, { path: field.path, value, overridden: body.value !== null });
+            }
+            catch (error) {
+                sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+            }
+            return;
+        }
+        try {
+            const html = readFileSync(join(pluginRoot, 'web', 'settings', 'index.html'), 'utf8');
+            res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+            res.end(html);
+        }
+        catch (error) {
+            sendJson(res, 404, { error: `设置页面缺失：${String(error)}` });
+        }
+    };
+    try {
+        const dispose = ctx.effect(() => server.register({ kind: 'prefix', path: '/daughter-settings', handler }), 'dsh-daughter:settings-panel');
+        logger.info('dsh-daughter: 设置面板已挂载 /daughter-settings');
+        return dispose;
+    }
+    catch (error) {
+        logger.warn('dsh-daughter: 设置面板注册失败', { error: String(error) });
         return () => { };
     }
 }

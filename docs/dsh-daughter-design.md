@@ -5,7 +5,7 @@
 | 插件名 | dsh-daughter |
 | 文档类型 | 设计文档 / 技术评审稿（不含实现代码） |
 | 目标运行形态 | TypeScript / Node 插件 |
-| 状态 | 待评审（P0–P8 已落地并核对，P9 3/7；核对基准：当前版本 <!--docsync:version-->0.7.1<!--/docsync-->，`npm test` <!--docsync:test_count-->299<!--/docsync--> 项、`npm run check:link` <!--docsync:check_items-->22<!--/docsync--> 项全绿、`tsc --noEmit` 无错） |
+| 状态 | 待评审（P0–P8 已落地并核对，P9 3/7；核对基准：当前版本 <!--docsync:version-->0.8.0<!--/docsync-->，`npm test` <!--docsync:test_count-->309<!--/docsync--> 项、`npm run check:link` <!--docsync:check_items-->22<!--/docsync--> 项全绿、`tsc --noEmit` 无错） |
 | 日期 | 2026-11-02（v0.2 2026-11-04；v0.3 加固 + 桌宠弱耦合 2026-11-04；v0.4 认知滤网 + 星图观感 + 记忆情感闭环 2026-11-05；v0.5 性格多样性演化 2026-11-06） |
 | 适用范围 | 人格陪伴、长期记忆、技能与资产、条件反射、多应用连接 |
 
@@ -1416,7 +1416,7 @@ security.connector_token（≥16 字符，显式固定，多机/容器用）
 
 ### 14.1 实现核对（截至 2026-11-06 v0.5）
 
-核对基准：`src/` 当前构建（**<!--docsync:test_count-->299<!--/docsync--> 项测试 + <!--docsync:check_items-->22<!--/docsync--> 项自检全绿**）+ VPet MOD 实测 + Android ADB / 电脑桌面本地模拟。
+核对基准：`src/` 当前构建（**<!--docsync:test_count-->309<!--/docsync--> 项测试 + <!--docsync:check_items-->22<!--/docsync--> 项自检全绿**）+ VPet MOD 实测 + Android ADB / 电脑桌面本地模拟。
 
 | 项 | 设计表述 | 实现现状 | 处置 |
 | --- | --- | --- | --- |
@@ -1691,7 +1691,7 @@ security.connector_token（≥16 字符，显式固定，多机/容器用）
 | 6 | 条数与选句都由种子派生，可复现 | `evaluateThink` 的 `seed` | 同种子两次结果一致 |
 | 7 | 与主动开口共用一条环境节拍，但开关独立 | `host.ts` 的 `ambientTimer` | 只开 think 也会评估；只关心 speak 时 think 不产出 |
 
-验证基线：`tests/think.test.ts` **5 项**。当前 `npm test` <!--docsync:test_count-->299<!--/docsync--> 项全绿。
+验证基线：`tests/think.test.ts` **5 项**。当前 `npm test` <!--docsync:test_count-->309<!--/docsync--> 项全绿。
 
 > 已知缺口：尽管叫"思考"，它并不挂在模型回合的 thinking 阶段，而是独立节拍上的自我对话；文案仍是模板池，后续接模型生成时可替换 `THINK_LINES` 而不动节流与出口。
 
@@ -1780,7 +1780,7 @@ L3（防御成熟度 / 偏差权重 / 应对策略）原来只有归一化，没
 - [x] 记忆与情感闭环已修复（§14.7，当时测试 103 项全绿：情绪量程、回忆重构、情感回落、L2 锚点、超级节点、存量显著性、同题口径）
 - [x] 性格多样性演化已落地（§4.8 / §14.8，`tests/personality.test.ts` 9 项）
 - [x] 行为动机已落地（§14.9，`tests/motivation.test.ts` 14 项；人格双通路 + 零信号收口）
-- [x] 主动开口已落地（§14.10，`tests/speak.test.ts` 20 项；思念饱和 + 欲言又止 + 三重兜底 + 出口抽象 + 桌面场景感知 + 首次开启锚点；**代码默认仍为关闭，本机 `config.yaml` 已显式开启并调为活跃档**，当前 `npm test` <!--docsync:test_count-->299<!--/docsync--> 项全绿）
+- [x] 主动开口已落地（§14.10，`tests/speak.test.ts` 20 项；思念饱和 + 欲言又止 + 三重兜底 + 出口抽象 + 桌面场景感知 + 首次开启锚点；**代码默认仍为关闭，本机 `config.yaml` 已显式开启并调为活跃档**，当前 `npm test` <!--docsync:test_count-->309<!--/docsync--> 项全绿）
 - [x] 思考碎碎念已落地（§14.11，`tests/think.test.ts` 5 项；独立 think 通道、不写事件、不影响 `memoryHit`、每轮 ≤2 条且单条 ≤40 字，与主动开口共用节拍但开关独立）
 - [x] L3 证据表已落地（§14.12，`tests/l3-evidence.test.ts` 3 项；单批事件只写 delta=0 证据，同向 ≥3 次才转正并写演化日志）
 - [x] speak 影子模式与统计已落地（§14.10，`tests/speak-shadow.test.ts` 3 项；影子评估不投递不写状态，按日聚合 act/hold/silent）

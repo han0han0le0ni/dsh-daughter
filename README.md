@@ -117,6 +117,8 @@ dotnet build -c Release -p:VPetDir="E:\SteamLibrary\steamapps\common\VPet"
 | 安全 | 三档降级 + 滞回 + 写类工具熔断 + 输出侧诊断词检查；只描述强度与持续时间 |
 | 注入预算 | 硬上限 3000 tokens，按优先级裁剪，`constraint` 永不裁 |
 | 星图 | `/star-map/` 只读可视化：九个星系、Canvas 2D 手写透视、无需联网与 three.js |
+| 设置面板 | DSH 设置弹窗里的「daughter设置」分区，137 项开关/数值，半透明界面、白/暗双主题、置顶标签、悬停说明；不必改 `config.yaml` |
+| 意见反馈 | 在「daughter设置」分区内的「意见反馈」标签：本地留痕，有 GitHub 登录态时自动建 Issue，否则给预填好的 GitHub 页面 |
 
 ## 安装
 
@@ -150,8 +152,8 @@ dsh plugin add git+https://github.com/han0han0le0ni/dsh-daughter.git
 ```bash
 npm install
 npm run build        # tsc → dist/
-npm test             # 211 项
-npm run check:link   # 适配性 / 联动性自检，19 项
+npm test             # 309 项
+npm run check:link   # 适配性 / 联动性自检，22 项
 ```
 
 > 仓库里提交了 `dist/`：市场与 git 安装没有构建步骤，必须带一份可直接加载的产物。改了 `src/` 记得 `npm run build` 再提交（`prepare` 脚本也会兜一层）。
@@ -159,6 +161,15 @@ npm run check:link   # 适配性 / 联动性自检，19 项
 - 运行配置见 `config.yaml`（数值均有范围校验，非法值回落默认并告警）。
 - 运行时数据写到 `data_root`（默认 `.`），目录按脑区划分：`brain/hippocampus`、`brain/neocortex`、`brain/prefrontal` 等。
 - 桌宠是可选件：没有 MOD、没有 bridge、没有 `vpet` 配置时，插件行为与"完全不知道桌宠存在"一致。
+
+## 设置与意见反馈
+
+- **常用开关**：打开 DSH 的**设置弹窗**，左侧「**daughter设置**」（`settings.section` 分区，`/daughter-settings/`）。137 项开关/数值按 6 组展示：记忆与检索、联想与连续性、情感与表达、学习与技能、安全与隐私、记忆维护与性格。标签栏始终置顶，鼠标悬停任一设置项会显示作用、配置路径与取值范围。改完即写进 `settings/overrides.json`，并尝试作用于运行中的插件；部分运行时开关（例如 `reflex.short_circuit`）仍需重启宿主。每项可「恢复默认」回到 `config.yaml` 基线。
+- **原生插件配置**：`插件 → 插件配置 → dsh-daughter` 的 cordis 表单仍然保留，由 `Config` schema 生成；高级字段隐藏但不丢，适合维护者做细粒度调整。
+- **意见反馈**：「daughter设置」分区内的「意见反馈」标签（`/feedback/`，不再占用侧边栏入口）。提交后先在 `logs/feedback/queue.jsonl` 留一份记录：
+  - 本机登录过 GitHub CLI（`gh auth login`）或设了 `DSH_GITHUB_TOKEN` 时，插件直接调用 GitHub API 在 [仓库 Issue](https://github.com/han0han0le0ni/dsh-daughter/issues) 区开帖，并把 Issue 链接回显给用户；
+  - 没有令牌时返回预填好的 GitHub Issue 链接，用户点一下即可发出；之后登录了令牌，可以在面板里点「重试同步待发条目」补发；
+  - 联系方式与环境信息都是用户自愿勾选；**不会**上传记忆库、对话正文或令牌，令牌也不会写进本地队列。
 
 ## 记忆体检
 
@@ -194,16 +205,16 @@ npm run reset -- all --apply --yes      # 恢复出厂设置（多一道 --yes �
 ## 目录
 
 ```text
-src/                插件主体（23 个 TS 文件）
-  runtime/          记忆、人格、状态、动机、主动开口、安全、滤网、反射、可观测性
+src/                插件主体（35 个 TS 文件）
+  runtime/          记忆、人格、状态、动机、主动开口、安全、滤网、反射、可观测性、意见反馈
 scripts/            自检与存量治理（link-check / filter-sweep / reset / memory-doctor）
 connectors/
   vpet/             VPet MOD 源码（mod-src/，10 个 .cs + info.lps）与桥接脚本（bridge.mjs）
   pet-shell/        独立 WPF 壳（读 VPet 素材，不启动游戏）
   android/          ADB 受限动作
   desktop/          桌面观察与输入
-web/                星图页面（纯静态）
-tests/              21 个测试文件
+web/                星图与意见反馈页面（纯静态）
+tests/              42 个测试文件
 docs/               设计文档、实现核对、评估、检测报告
 ```
 
