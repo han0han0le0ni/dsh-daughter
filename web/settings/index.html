@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>daughter设置 · dsh-daughter</title>
+<style>
+  :root {
+    color-scheme: light;
+    --surface: rgba(255, 255, 255, .66);
+    --surface-strong: rgba(255, 255, 255, .84);
+    --line: rgba(120, 145, 175, .22);
+    --text: #233246;
+    --muted: #65758c;
+    --accent: #2f8f83;
+    --accent-soft: rgba(47, 143, 131, .12);
+    --warn: #b9822b;
+    --warn-soft: rgba(185, 130, 43, .12);
+    --danger: #c65b4d;
+    --tip-bg: #1e2b3d;
+    --tip-text: #e8f0f8;
+    --shadow: 0 8px 30px rgba(38, 63, 92, .10);
+    --wash: radial-gradient(circle at 18% 0%, rgba(214, 238, 234, .62), rgba(240, 246, 252, .46) 58%, rgba(255, 255, 255, .38));
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --surface: rgba(17, 25, 37, .66);
+    --surface-strong: rgba(25, 35, 51, .84);
+    --line: rgba(150, 175, 210, .20);
+    --text: #dce7f5;
+    --muted: #94a5bd;
+    --accent: #6cc9b8;
+    --accent-soft: rgba(108, 201, 184, .14);
+    --warn: #e0b469;
+    --warn-soft: rgba(224, 180, 105, .14);
+    --danger: #ec8072;
+    --tip-bg: rgba(226, 235, 247, .96);
+    --tip-text: #1c2a3b;
+    --shadow: 0 10px 34px rgba(0, 0, 0, .28);
+    --wash: radial-gradient(circle at 18% 0%, rgba(35, 74, 78, .55), rgba(20, 31, 47, .52) 58%, rgba(12, 20, 31, .48));
+  }
+  * { box-sizing: border-box; }
+  html { background: transparent; }
+  body {
+    margin: 0; padding: 0 18px 32px; background: var(--wash); color: var(--text);
+    font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif; -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 800px; margin: 0 auto; }
+  .topbar {
+    position: sticky; top: 0; z-index: 20; margin: 0 -18px 16px; padding: 16px 18px 12px;
+    background: var(--surface); backdrop-filter: blur(16px) saturate(1.2);
+    border-bottom: 1px solid var(--line);
+  }
+  .topbar-inner { max-width: 800px; margin: 0 auto; }
+  header { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  h1 { font-size: 17px; font-weight: 650; margin: 0; color: var(--text); }
+  .sub { font-size: 11.5px; color: var(--muted); }
+  #themeToggle { margin-left: auto; }
+  .tabs { display: flex; gap: 8px; margin-top: 13px; }
+  .tabs button, #themeToggle {
+    font: inherit; font-size: 12px; padding: 7px 16px; border-radius: 999px; cursor: pointer;
+    border: 1px solid var(--line); background: var(--surface-strong); color: var(--muted);
+  }
+  .tabs button.active { color: #fff; background: var(--accent); border-color: var(--accent); }
+  #themeToggle:hover, .tabs button:hover:not(.active) { color: var(--accent); border-color: var(--accent); }
+  .card {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
+    box-shadow: var(--shadow); backdrop-filter: blur(12px) saturate(1.1);
+    padding: 14px 18px; margin-bottom: 12px;
+  }
+  h2 { font-size: 12px; font-weight: 650; letter-spacing: .04em; color: var(--accent); margin: 0 0 8px; }
+  .row { display: flex; align-items: center; gap: 12px; padding: 8px 0; border-top: 1px solid var(--line); }
+  .row:first-of-type { border-top: 0; }
+  .info { position: relative; flex: 1; min-width: 0; cursor: help; }
+  .name { font-size: 12.5px; color: var(--text); }
+  .badge { font-size: 10px; color: var(--warn); background: var(--warn-soft); border-radius: 20px; padding: 1px 7px; margin-left: 6px; }
+  .tooltip {
+    display: none; position: absolute; left: 0; top: calc(100% + 6px); z-index: 30;
+    width: 320px; padding: 10px 12px; border-radius: 9px; font-size: 11px; line-height: 1.7;
+    background: var(--tip-bg); color: var(--tip-text); box-shadow: var(--shadow);
+    white-space: normal; pointer-events: none;
+  }
+  .info:hover .tooltip { display: block; }
+  .ctrl { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+  input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; }
+  input[type=number] {
+    width: 94px; font: inherit; font-size: 12px; color: var(--text);
+    background: var(--surface-strong); border: 1px solid var(--line); border-radius: 7px; padding: 6px 8px; outline: none;
+  }
+  input[type=number]:focus { border-color: var(--accent); }
+  button {
+    font: inherit; font-size: 11px; cursor: pointer; color: var(--muted);
+    background: var(--surface-strong); border: 1px solid var(--line); border-radius: 7px; padding: 6px 10px;
+  }
+  button:hover { color: var(--accent); border-color: var(--accent); }
+  #msg { min-height: 16px; font-size: 11px; color: var(--accent); margin: 8px 2px 0; }
+  #msg.error { color: var(--danger); }
+  #feedbackTab { display: none; }
+  #feedbackTab.active { display: block; }
+  #settingsTab:not(.active) { display: none; }
+  .frame { width: 100%; height: 74vh; min-height: 520px; border: 1px solid var(--line); border-radius: 12px; background: transparent; }
+  .note { font-size: 11px; color: var(--muted); line-height: 1.7; margin: 10px 2px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="topbar">
+    <div class="topbar-inner">
+      <header>
+        <h1>daughter设置</h1>
+        <span class="sub">dsh-daughter 的常用开关都在这里，不用改文件，也不用打指令</span>
+        <button id="themeToggle" type="button">深色</button>
+      </header>
+      <div class="tabs">
+        <button id="tabSettings" class="active" type="button">功能开关</button>
+        <button id="tabFeedback" type="button">意见反馈</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="settingsTab" class="active">
+    <div id="cards">读取设置中…</div>
+    <p id="msg"></p>
+    <p class="note">鼠标悬停在任意设置项上可查看说明与配置路径。改动会写入覆盖文件并尽量即时生效，个别运行时开关需要重启宿主。点「恢复默认」回到 config.yaml 的基线。</p>
+  </div>
+
+  <div id="feedbackTab">
+    <iframe class="frame" src="/feedback/" title="意见反馈"></iframe>
+  </div>
+</div>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  const THEME_KEY = 'dsh-daughter-theme';
+
+  function applyTheme(theme) {
+    document.documentElement.dataset.theme = theme;
+    $('themeToggle').textContent = theme === 'dark' ? '浅色' : '深色';
+  }
+  const forcedTheme = new URLSearchParams(location.search).get('theme');
+  if (forcedTheme === 'dark' || forcedTheme === 'light') localStorage.setItem(THEME_KEY, forcedTheme);
+  applyTheme(localStorage.getItem(THEME_KEY) === 'dark' ? 'dark' : 'light');
+  $('themeToggle').addEventListener('click', () => {
+    const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+    localStorage.setItem(THEME_KEY, next);
+    applyTheme(next);
+  });
+  window.addEventListener('storage', (event) => {
+    if (event.key === THEME_KEY) applyTheme(event.newValue === 'dark' ? 'dark' : 'light');
+  });
+
+  async function api(path, options) {
+    const response = await fetch(path, options);
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || `请求失败（${response.status}）`);
+    return data;
+  }
+
+  function message(text, error = false) {
+    $('msg').textContent = text;
+    $('msg').className = error ? 'error' : '';
+  }
+
+  function detail(field) {
+    const range = field.type === 'number' ? `，范围 ${field.min} ～ ${field.max}` : '';
+    return `作用：${field.hint || field.label}。配置路径：${field.path}。类型：${field.type === 'boolean' ? '开关' : '数值'}${range}。改动写入 settings/overrides.json；“恢复默认”会删掉这一项覆盖值，回到 config.yaml 的基线。`;
+  }
+
+  function render(list) {
+    const groups = [...new Set(list.map((field) => field.group))];
+    $('cards').innerHTML = groups.map((group) => {
+      const rows = list.filter((field) => field.group === group).map((field) => {
+        const tip = detail(field);
+        const control = field.type === 'boolean'
+          ? `<input type="checkbox" data-path="${field.path}" ${field.value === true ? 'checked' : ''}>`
+          : `<input type="number" data-path="${field.path}" value="${field.value ?? ''}" min="${field.min ?? ''}" max="${field.max ?? ''}" step="any">`;
+        return `<div class="row" title="${tip}">
+          <div class="info">
+            <div class="name">${field.label}${field.overridden ? '<span class="badge">已覆盖</span>' : ''}</div>
+            <div class="tooltip">${tip}</div>
+          </div>
+          <div class="ctrl">${control}<button type="button" data-reset="${field.path}">恢复默认</button></div>
+        </div>`;
+      }).join('');
+      return `<div class="card"><h2>${group} · ${list.filter((f) => f.group === group).length} 项</h2>${rows}</div>`;
+    }).join('');
+
+    document.querySelectorAll('input[data-path]').forEach((input) => {
+      input.addEventListener('change', () => save(input.dataset.path, input.type === 'checkbox' ? input.checked : input.value));
+    });
+    document.querySelectorAll('button[data-reset]').forEach((button) => {
+      button.addEventListener('click', () => save(button.dataset.reset, null));
+    });
+  }
+
+  async function save(path, value) {
+    try {
+      await api('/daughter-settings/api/config', {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path, value }),
+      });
+      message(`已保存：${path}${value === null ? '（恢复默认）' : ''}`);
+    } catch (error) {
+      message(`保存失败：${error.message}`, true);
+    }
+    await load();
+  }
+
+  async function load() {
+    try {
+      const data = await api('/daughter-settings/api/config');
+      render(data.fields);
+    } catch (error) {
+      $('cards').textContent = `设置读取失败：${error.message}`;
+    }
+  }
+
+  $('tabSettings').addEventListener('click', () => {
+    $('tabSettings').classList.add('active');
+    $('tabFeedback').classList.remove('active');
+    $('settingsTab').classList.add('active');
+    $('feedbackTab').classList.remove('active');
+  });
+  $('tabFeedback').addEventListener('click', () => {
+    $('tabFeedback').classList.add('active');
+    $('tabSettings').classList.remove('active');
+    $('feedbackTab').classList.add('active');
+    $('settingsTab').classList.remove('active');
+  });
+
+  load();
+</script>
+</body>
+</html>

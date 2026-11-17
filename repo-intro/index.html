@@ -1,0 +1,545 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>dsh-daughter · 一个会记得你的插件</title>
+<meta name="description" content="给 DeepSeek Harness 的长期人格与记忆插件。全部代码由 AI 编写，作者只负责奇思妙想。">
+<style>
+  :root{
+    --bg:#141413; --bg2:#1c1b19; --panel:#201f1d;
+    --ink:#faf9f5; --ink2:#b0aea5; --ink3:#8a877e;
+    --line:rgba(250,249,245,.09);
+    --acc:#d97757; --acc2:#6a9bcc; --acc3:#788c5d;
+    --radius:22px;
+    --font-head:"Outfit","PingFang SC","Microsoft YaHei",sans-serif;
+    --font-mono:"Cascadia Code",Consolas,monospace;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{background:var(--bg);color:var(--ink);font-family:var(--font-head);font-size:16px;line-height:1.75;-webkit-font-smoothing:antialiased;overflow-x:hidden}
+  ::selection{background:var(--acc);color:#141413}
+  .wrap{max-width:1200px;margin:0 auto;padding:0 28px}
+  section{padding:104px 0}
+  .kicker{display:inline-flex;align-items:center;gap:10px;font-size:12px;letter-spacing:.22em;text-transform:uppercase;color:var(--acc);font-weight:600}
+  .kicker::before{content:"";width:26px;height:1px;background:var(--acc)}
+  h2{font-size:clamp(30px,4.2vw,46px);font-weight:700;letter-spacing:-.02em;line-height:1.15;margin:16px 0 14px}
+  .lead{color:var(--ink2);max-width:62ch;font-size:17px}
+  .lead b{color:var(--ink);font-weight:600}
+  .reveal{opacity:0;transform:translateY(26px);transition:opacity .8s cubic-bezier(.16,1,.3,1),transform .8s cubic-bezier(.16,1,.3,1)}
+  .reveal.in{opacity:1;transform:none}
+  code.inline{font-family:var(--font-mono);font-size:13.5px;background:rgba(250,249,245,.07);padding:2px 8px;border-radius:6px}
+
+  nav{position:fixed;top:0;left:0;right:0;z-index:50;backdrop-filter:blur(14px);background:rgba(20,20,19,.72);border-bottom:1px solid var(--line)}
+  .nav-inner{max-width:1200px;margin:0 auto;padding:13px 28px;display:flex;align-items:center;justify-content:space-between}
+  .brand{display:flex;align-items:center;gap:10px;font-weight:700;font-size:17px;text-decoration:none;color:var(--ink)}
+  .brand .dot{width:9px;height:9px;border-radius:50%;background:var(--acc);box-shadow:0 0 0 0 rgba(217,119,87,.6);animation:pulse 2.4s infinite}
+  @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(217,119,87,.55)}70%{box-shadow:0 0 0 12px rgba(217,119,87,0)}100%{box-shadow:0 0 0 0 rgba(217,119,87,0)}}
+  .nav-links{display:flex;gap:26px;align-items:center}
+  .nav-links a{color:var(--ink2);text-decoration:none;font-size:14px;transition:color .2s}
+  .nav-links a:hover{color:var(--ink)}
+  .nav-cta{background:var(--acc);color:#141413;padding:8px 18px;border-radius:99px;font-weight:600}
+  .nav-cta:hover{background:#e58a6b;color:#141413}
+  @media(max-width:760px){.nav-links a:not(.nav-cta){display:none}}
+
+  .hero{position:relative;min-height:100dvh;display:flex;align-items:center;padding:120px 0 90px;overflow:hidden}
+  #net{position:absolute;inset:0;width:100%;height:100%}
+  .hero .wrap{position:relative;z-index:2;display:grid;grid-template-columns:1.1fr .9fr;gap:56px;align-items:center;width:100%}
+  @media(max-width:900px){.hero .wrap{grid-template-columns:1fr;gap:40px}}
+  .repo-pill{display:inline-flex;align-items:center;gap:10px;padding:8px 16px;border-radius:99px;border:1px solid var(--line);background:rgba(250,249,245,.04);font-size:13px;color:var(--ink2);text-decoration:none;transition:border-color .2s,color .2s}
+  .repo-pill:hover{border-color:rgba(217,119,87,.5);color:var(--ink)}
+  .repo-pill svg{width:15px;height:15px;fill:currentColor;flex:none}
+  h1{font-weight:800;font-size:clamp(42px,6.4vw,76px);line-height:1.06;letter-spacing:-.035em;margin:26px 0 8px}
+  h1 .cn{display:block;font-size:.5em;font-weight:600;letter-spacing:.08em;color:var(--ink2);margin-top:14px}
+  h1 .glow{color:var(--acc)}
+  .hero-sub{color:var(--ink2);font-size:17.5px;max-width:56ch;margin:20px 0 30px}
+  .hero-sub b{color:var(--ink);font-weight:600}
+  .hero-actions{display:flex;gap:14px;flex-wrap:wrap}
+  .btn{display:inline-flex;align-items:center;gap:9px;padding:13px 25px;border-radius:99px;font-weight:600;font-size:15px;text-decoration:none;transition:transform .15s,background .2s,border-color .2s}
+  .btn:active{transform:scale(.97)}
+  .btn-primary{background:var(--acc);color:#141413}
+  .btn-primary:hover{background:#e58a6b}
+  .btn-ghost{border:1px solid var(--line);color:var(--ink)}
+  .btn-ghost:hover{border-color:rgba(250,249,245,.3)}
+  .btn svg{width:16px;height:16px;fill:currentColor}
+  .hero-card{border:1px solid var(--line);border-radius:var(--radius);background:linear-gradient(160deg,rgba(250,249,245,.05),rgba(250,249,245,.015));padding:24px;box-shadow:inset 0 1px 0 rgba(255,255,255,.06);font-family:var(--font-mono);font-size:13px;line-height:1.9;color:var(--ink2)}
+  .hero-card .bar{display:flex;gap:7px;margin-bottom:15px}
+  .hero-card .bar i{width:10px;height:10px;border-radius:50%}
+  .hero-card .c1{background:#e0655a}.hero-card .c2{background:#e0b04e}.hero-card .c3{background:#7fb069}
+  .hero-card .k{color:var(--acc2)}.hero-card .s{color:var(--ink3)}.hero-card .ok{color:var(--acc)}
+  .scroll-hint{position:absolute;left:50%;bottom:24px;transform:translateX(-50%);color:var(--ink3);font-size:11px;letter-spacing:.24em;z-index:2}
+  .scroll-hint::after{content:"";display:block;width:1px;height:34px;margin:8px auto 0;background:linear-gradient(var(--ink3),transparent);animation:drip 1.8s infinite}
+  @keyframes drip{0%{transform:scaleY(0);transform-origin:top}55%{transform:scaleY(1);transform-origin:top}56%{transform-origin:bottom}100%{transform:scaleY(0);transform-origin:bottom}}
+
+  .truth{background:var(--bg2);border-block:1px solid var(--line)}
+  .truth-grid{display:grid;grid-template-columns:1fr 1fr;gap:52px;align-items:center}
+  @media(max-width:880px){.truth-grid{grid-template-columns:1fr;gap:34px}}
+  .truth blockquote{border-left:3px solid var(--acc);padding:6px 0 6px 26px;margin-top:24px;font-size:clamp(20px,2.5vw,26px);font-weight:600;line-height:1.5;letter-spacing:-.01em}
+  .truth blockquote em{font-style:normal;color:var(--acc)}
+  .truth-side{display:flex;flex-direction:column;gap:14px}
+  .truth-item{display:flex;gap:14px;padding:17px 20px;border:1px solid var(--line);border-radius:16px;background:rgba(250,249,245,.02)}
+  .truth-item .num{font-family:var(--font-mono);color:var(--acc);font-weight:700;flex:none;padding-top:2px}
+  .truth-item h4{font-size:15.5px;font-weight:600;margin-bottom:3px}
+  .truth-item p{font-size:14px;color:var(--ink2)}
+  .warn{margin-top:22px;padding:16px 20px;border-radius:14px;border:1px solid rgba(217,119,87,.35);background:rgba(217,119,87,.09);color:#e8c4b2;font-size:14px}
+  .warn b{color:var(--acc)}
+
+  .feat{display:grid;grid-template-columns:1fr 1fr;gap:26px;margin-top:46px}
+  @media(max-width:880px){.feat{grid-template-columns:1fr}}
+  .feat-card{position:relative;border:1px solid var(--line);border-radius:var(--radius);background:var(--panel);padding:32px;transition:transform .35s cubic-bezier(.16,1,.3,1),border-color .3s}
+  .feat-card:hover{transform:translateY(-6px);border-color:rgba(217,119,87,.4)}
+  .feat-card .tag{position:absolute;top:0;right:0;background:rgba(217,119,87,.12);color:var(--acc);font-family:var(--font-mono);font-size:12px;padding:8px 16px;border-bottom-left-radius:14px;font-weight:600}
+  .feat-card h3{font-size:22px;font-weight:700;margin:12px 0 10px;letter-spacing:-.01em}
+  .feat-card p{color:var(--ink2);font-size:15px}
+  .feat-card ul{list-style:none;margin-top:16px;display:flex;flex-direction:column;gap:9px}
+  .feat-card li{display:flex;gap:10px;font-size:14px;color:var(--ink2)}
+  .feat-card li::before{content:"›";color:var(--acc);font-weight:700;flex:none}
+  .feat-card .result{margin-top:20px;padding:13px 17px;border-radius:14px;background:rgba(120,140,93,.12);border:1px solid rgba(120,140,93,.3);font-size:13.5px;color:#c9d6b8}
+  .feat-card .result b{color:var(--acc3)}
+  .feat-card.orange:hover{border-color:rgba(106,155,204,.4)}
+  .feat-card.orange .tag{background:rgba(106,155,204,.12);color:var(--acc2)}
+  .feat-card.orange li::before{color:var(--acc2)}
+
+  .stats{background:var(--bg2);border-block:1px solid var(--line)}
+  .stat-grid{display:grid;grid-template-columns:repeat(6,1fr);gap:1px;background:var(--line);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;margin-top:44px}
+  @media(max-width:980px){.stat-grid{grid-template-columns:repeat(3,1fr)}}
+  @media(max-width:560px){.stat-grid{grid-template-columns:repeat(2,1fr)}}
+  .stat{background:var(--bg2);padding:28px 16px;text-align:center;transition:background .3s}
+  .stat:hover{background:var(--panel)}
+  .stat .v{font-size:clamp(25px,3vw,36px);font-weight:800;letter-spacing:-.02em}
+  .stat .l{font-size:12.5px;color:var(--ink3);margin-top:6px;letter-spacing:.06em}
+
+  .tl{position:relative;margin-top:52px;padding-left:34px}
+  .tl::before{content:"";position:absolute;left:8px;top:6px;bottom:6px;width:2px;background:linear-gradient(var(--acc),rgba(217,119,87,.15))}
+  .tl-item{position:relative;padding-bottom:40px}
+  .tl-item:last-child{padding-bottom:0}
+  .tl-item::before{content:"";position:absolute;left:-33px;top:7px;width:12px;height:12px;border-radius:50%;background:var(--bg);border:3px solid var(--acc);box-shadow:0 0 0 4px rgba(217,119,87,.12)}
+  .tl-item .ph{font-family:var(--font-mono);font-size:12px;color:var(--acc);letter-spacing:.14em;text-transform:uppercase}
+  .tl-item h3{font-size:20px;font-weight:700;margin:7px 0 6px}
+  .tl-item p{color:var(--ink2);font-size:15px;max-width:64ch}
+  .tl-item p b{color:var(--ink);font-weight:600}
+
+  .chips{display:flex;flex-wrap:wrap;gap:12px;margin-top:38px}
+  .chip{padding:10px 20px;border-radius:99px;border:1px solid var(--line);font-size:14px;color:var(--ink2);background:rgba(250,249,245,.03);transition:all .25s}
+  .chip:hover{color:var(--ink);border-color:rgba(217,119,87,.45);transform:translateY(-2px)}
+  .chip b{color:var(--acc);font-weight:600}
+
+  .cta{position:relative;text-align:center;padding:126px 0 116px;overflow:hidden}
+  .cta h2{font-size:clamp(32px,4.6vw,52px)}
+  .cta .lead{margin:0 auto 36px}
+  .cta .glowline{position:absolute;left:50%;top:0;transform:translateX(-50%);width:60%;height:1px;background:linear-gradient(90deg,transparent,rgba(217,119,87,.7),transparent)}
+  footer{border-top:1px solid var(--line);padding:32px 0;color:var(--ink3);font-size:13px}
+  .foot{display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap}
+  footer a{color:var(--ink2);text-decoration:none}
+  footer a:hover{color:var(--acc)}
+
+  @media(prefers-reduced-motion:reduce){
+    *,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}
+    html{scroll-behavior:auto}.reveal{opacity:1;transform:none}
+  }
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="nav-inner">
+    <a class="brand" href="#top"><span class="dot"></span>dsh-daughter</a>
+    <div class="nav-links">
+      <a href="#truth">这是啥</a>
+      <a href="#brain">她怎么想</a>
+      <a href="#journey">成长</a>
+      <a class="nav-cta" href="https://github.com/han0han0le0ni/dsh-daughter" target="_blank" rel="noopener">GitHub ↗</a>
+    </div>
+  </div>
+</nav>
+
+<header class="hero" id="top">
+  <canvas id="net" aria-hidden="true"></canvas>
+  <div class="wrap">
+    <div>
+      <a class="repo-pill" href="https://github.com/han0han0le0ni/dsh-daughter" target="_blank" rel="noopener">
+        <svg viewBox="0 0 16 16"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+        han0han0le0ni / dsh-daughter · v0.7.1 · MIT
+      </a>
+      <h1>She <span class="glow">remembers</span> you<span class="cn">一个会记得你的 DSH 插件</span></h1>
+      <p class="hero-sub">
+        人格分层、性格演化、长期记忆、技能反射与安全降级——给 DeepSeek Harness 装一个「大脑」，
+        让记忆跟着角色走，不跟着会话走：<b>换对话框、换工作区，关系和经历都还在</b>。
+      </p>
+      <p class="hero-sub" style="margin-top:14px">
+        和前两个仓库一样：<b>这个仓库里没有任何一行代码是我亲手写的</b>——我不会编程，全部代码由 AI 编写。
+        我贡献的是想法、边界感和一句句「再改改」。
+      </p>
+      <div class="hero-actions">
+        <a class="btn btn-primary" href="https://github.com/han0han0le0ni/dsh-daughter" target="_blank" rel="noopener">
+          <svg viewBox="0 0 16 16"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+          去仓库看看
+        </a>
+        <a class="btn btn-ghost" href="#truth">先说清楚这是啥</a>
+      </div>
+    </div>
+    <div class="hero-card" aria-hidden="true">
+      <div class="bar"><i class="c1"></i><i class="c2"></i><i class="c3"></i></div>
+      <div><span class="k">$</span> 这个插件到底会什么？</div>
+      <div>&gt; personality = <span class="ok">L1~L5</span> <span class="s">// 五层人格</span></div>
+      <div>&gt; memory    = <span class="ok">FTS5 + 联想</span> <span class="s">// 长期记忆</span></div>
+      <div>&gt; motives   = <span class="ok">阈值 + 方向舵</span> <span class="s">// 行为动机</span></div>
+      <div>&gt; speak     = <span class="ok">off</span> <span class="s">// 主动开口默认关</span></div>
+      <div>&gt; pet       = <span class="ok">VPet / dsh-pet</span> <span class="s">// 桌宠联动</span></div>
+      <div>&nbsp;</div>
+      <div><span class="k">window_1</span>: 「昨天你说过喜欢下雨」</div>
+      <div><span class="k">window_2</span>: <span class="ok">「今天也下雨了呢。」</span></div>
+      <div>&nbsp;</div>
+      <div><span class="s">// 记忆跟着角色走，不跟着会话走</span></div>
+    </div>
+  </div>
+  <div class="scroll-hint">SCROLL</div>
+</header>
+
+<section class="truth" id="truth">
+  <div class="wrap truth-grid">
+    <div class="reveal">
+      <span class="kicker">坦白从宽</span>
+      <h2>一个「拟人」插件，和它的非人类作者</h2>
+      <p class="lead">
+        这是给 DSH 做<b style="color:var(--ink)">人格演变</b>的插件：它不负责表现层，气泡、形象、动效由桌宠端决定。
+        它做的是「大脑」——人格怎么长、记忆怎么留、什么时候想说话、什么时候该闭嘴。
+        而写出这套大脑的，是一位不会编程、只负责提想法的人，和 listens 一切的 AI。
+      </p>
+      <blockquote>
+        记忆跟着角色走，<br><em>不跟着会话走。</em>
+      </blockquote>
+      <div class="warn">
+        <b>用途边界（README 原话）：</b>记忆与情绪会跨窗口贯通并带时间感——在 1 号窗口说一句，切到 2 号窗口她会接上一句。
+        <b>不要在正式/工作对话里开启</b>，否则私人聊天的记忆会串进工作上下文。
+      </div>
+    </div>
+    <div class="truth-side">
+      <div class="truth-item reveal">
+        <div class="num">01</div>
+        <div>
+          <h4>全部代码由 AI 编写</h4>
+          <p>34 个 TypeScript 源文件、41 个测试文件、12 个 C# MOD 文件、12 份设计文档——我一行没写，只负责需求和验收。</p>
+        </div>
+      </div>
+      <div class="truth-item reveal">
+        <div class="num">02</div>
+        <div>
+          <h4>先定规矩，再让 AI 写</h4>
+          <p>「主动开口默认关闭」「workspace 里常驻的东西不会变成长期记忆」「记忆删除必须可恢复」——外行管不住代码，但管得住原则。</p>
+        </div>
+      </div>
+      <div class="truth-item reveal">
+        <div class="num">03</div>
+        <div>
+          <h4>人格不是贴标签</h4>
+          <p>出生时五维有界抽样，只有累积/关键事件才推进演化，任一项不超出锚点 ±0.6；面板只展示证据，不输出「你是 X 型」的结论。</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="brain">
+  <div class="wrap">
+    <div class="reveal">
+      <span class="kicker">她的大脑里有什么</span>
+      <h2>五层人格，一套记性，一串动机</h2>
+      <p class="lead">这不是给模型换个提示词，而是一整套<b>会随时间变化的状态系统</b>。</p>
+    </div>
+    <div class="feat">
+      <div class="feat-card reveal">
+        <span class="tag">personality</span>
+        <h3>人格分层与演化</h3>
+        <p>L1 基线 / L2 关系 / L3 认知 / L4 情境子人格 / L5 运行时状态。L1–L4 慢速写回并留演化日志，L5 不写回人格。依恋底色出生只抽安全/焦虑/回避，混乱型只能靠经历演化。</p>
+        <ul>
+          <li>五维有界抽样，写入 innate 锚点，同种子可复现</li>
+          <li>日常闲聊不动人格，只有累积/关键事件才推动五维</li>
+          <li>任一项不超出锚点 ±0.6，不会「一夜变性」</li>
+        </ul>
+        <div class="result"><b>克制：</b>面板只展示证据与数值，不输出「你是 X 型」这种结论。</div>
+      </div>
+      <div class="feat-card orange reveal">
+        <span class="tag">memory</span>
+        <h3>长期记忆：摘要 + 全文两层</h3>
+        <p>SQLite FTS5 trigram + Dice 双路检索，五维加权（语义 / 近因 / 权重 / 情绪 / 链接），一跳二跳联想加概率联想，还有衰减、归档与情绪历史合并。</p>
+        <ul>
+          <li>写入前四道认知滤网：屏蔽 / 丢弃 / 合并 / 放行</li>
+          <li>来源可信度降权、显著性、习惯化签名、定期忘却</li>
+          <li>记忆体检 <code class="inline">npm run memory:doctor</code> 只读扫描，<code class="inline">--fix</code> 才动手修</li>
+        </ul>
+        <div class="result"><b>可恢复：</b>重置不清递归删除，整体移到 trash 目录；删完还会读回复核。</div>
+      </div>
+      <div class="feat-card orange reveal">
+        <span class="tag">motivation</span>
+        <h3>行为动机：门有多重 × 更想走哪条路</h3>
+        <p>技能不再靠「文本相似度过线」就执行，而是算一个动机分再和阈值比。人格走两条独立通路：阈值偏移决定门有多重，方向舵决定更想走哪条路。</p>
+        <ul>
+          <li>熟悉度倒 U：太少犹豫、太多厌倦，峰值在 peak</li>
+          <li>记忆三路径：结果预期 / 情绪记忆 / 自我效能</li>
+          <li>零信号恒不触发，连续失败进入指数冷却（熔断）</li>
+        </ul>
+        <div class="result"><b>可复算：</b>每个技能的 10 个因子都留在 MotivationBreakdown 里。</div>
+      </div>
+      <div class="feat-card reveal">
+        <span class="tag">speak</span>
+        <h3>主动开口：欲言又止，攒够才说</h3>
+        <p>没人说话时她会不会自己开口？思念有饱和（沉默一小时 0.25，十小时 0.77），hold 不是失败——它把「憋劲」累进 carry，攒够下一次才真开口。</p>
+        <ul>
+          <li>安静时段 0–7 点抬门槛，90 分钟冷却，一天最多 5 次</li>
+          <li>能看屏幕时先看场景：开会 ×0.85、游戏 ×0.7、写代码 ×0.4</li>
+          <li>文案按动机分类取池，最近 5 句避开；当前是模板不是模型生成</li>
+        </ul>
+        <div class="result"><b>默认关闭：</b>speak.enabled: false。自主行为不该装完就自动开始。</div>
+      </div>
+      <div class="feat-card reveal">
+        <span class="tag">safety</span>
+        <h3>安全降级与令牌</h3>
+        <p>三档降级 + 滞回 + 写类工具熔断 + 输出侧诊断词检查；只描述强度与持续时间。本机 HTTP 端点不再接受「本机来的就放行」——环回地址不是权限边界。</p>
+        <ul>
+          <li>32 字节随机令牌，权限 0600；无令牌 503，错令牌 401，浏览器来源 403</li>
+          <li>两个桥只绑 127.0.0.1，桌面连接器出厂关闭</li>
+          <li>/health 是唯一免令牌端点，且不吐队列、窗口与角色信息</li>
+        </ul>
+        <div class="result"><b>自检：</b>npm run check:link 起真桥逐条打过去，21 项拒绝路径。</div>
+      </div>
+      <div class="feat-card orange reveal">
+        <span class="tag">vpet</span>
+        <h3>桌宠联动：她会动起来</h3>
+        <p>VPet-Simulator + 自己写的 C# MOD（10 个 .cs，全部新增，不改游戏本体）：事件翻译成气泡与动画，thinking / tool / reply / error 都会点播工作状态。不启动游戏也有独立 WPF 壳可选。</p>
+        <ul>
+          <li>只有 HTTP 通信：/vpet/events 轮询、ack、/vpet/consumer/report、heartbeat</li>
+          <li>玩家摸头后短时间内本地优先，DSH 动作排队等待</li>
+          <li>抖音联动只读共享记忆库，不写对方的库、不反向同步</li>
+        </ul>
+        <div class="result"><b>边界：</b>桌宠是可选件。没有 MOD、没有桥，插件行为与「完全不知道桌宠存在」一致。</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="stats" id="stats">
+  <div class="wrap">
+    <div class="reveal">
+      <span class="kicker">数字会说话</span>
+      <h2>认真做了很久的「玩玩」</h2>
+    </div>
+    <div class="stat-grid reveal">
+      <div class="stat"><div class="v" data-count="45">0</div><div class="l">Git 提交</div></div>
+      <div class="stat"><div class="v" data-count="34">0</div><div class="l">TS 源文件</div></div>
+      <div class="stat"><div class="v" data-count="211">0</div><div class="l">自动化测试</div></div>
+      <div class="stat"><div class="v" data-count="12">0</div><div class="l">C# MOD 文件</div></div>
+      <div class="stat"><div class="v" data-count="12">0</div><div class="l">设计文档</div></div>
+      <div class="stat"><div class="v" data-count="3000" data-plus="+">0</div><div class="l">注入预算 tokens</div></div>
+    </div>
+  </div>
+</section>
+
+<section id="journey">
+  <div class="wrap">
+    <div class="reveal">
+      <span class="kicker">她的成长路线</span>
+      <h2>从出生到 0.7.1</h2>
+      <p class="lead">P0 到 P8 已落地并核对；<code class="inline">npm test</code> 211 项全绿，<code class="inline">check:link</code> 19 项 PASS。</p>
+    </div>
+    <div class="tl">
+      <div class="tl-item reveal">
+        <div class="ph">出生 · P0–P2</div>
+        <h3>五维抽样，写入 innate 锚点</h3>
+        <p>同角色同种子可复现。人格分层落地，记忆拆成摘要层与全文层——先有「她是谁」，才有「她记得什么」。</p>
+      </div>
+      <div class="tl-item reveal">
+        <div class="ph">成长 · P3–P5</div>
+        <h3>动机、反射与技能固化</h3>
+        <p>技能从 draft → active → frozen → deprecated，按形态自动固化为 MAC / CON / CMB / MOT，失败两次自动回退。关键词/正则/状态/事件四类反射毫秒级短路，不调用模型。</p>
+      </div>
+      <div class="tl-item reveal">
+        <div class="ph">联动 · P6–P8</div>
+        <h3>让她在桌面上动起来</h3>
+        <p>VPet MOD、独立 WPF 壳、Android、桌面连接器、抖音只读共享记忆。四种表达出口（pet / vpet / http / file）可同时开，单个出口抛错不影响其他。</p>
+      </div>
+      <div class="tl-item reveal">
+        <div class="ph">此刻 · 0.7.1</div>
+        <h3>情感派生、记忆冲突、技能影子池</h3>
+        <p>0.7.1 加入 think 通道与影子池；外部连接 4/7——VPet / Android / 桌面已通，抖音走只读共享记忆，QQ、Minecraft、单机待适配器。短板与优先级都写在文档里。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="stats">
+  <div class="wrap">
+    <div class="reveal">
+      <span class="kicker">快速上手</span>
+      <h2>三种装法，任选一种</h2>
+    </div>
+    <div class="chips reveal" style="margin-top:36px">
+      <span class="chip"><b>1</b> · DSH 插件市场：添加仓库自带索引 market/index.json</span>
+      <span class="chip"><b>2</b> · git 安装：dsh plugin add git+https://github.com/han0han0le0ni/dsh-daughter.git</span>
+      <span class="chip"><b>3</b> · 本地开发：npm install && npm run build && npm test</span>
+      <span class="chip"><b>自检</b> · npm run check:link（19 项）</span>
+      <span class="chip"><b>体检</b> · npm run memory:doctor -- --root=&lt;数据根&gt;</span>
+      <span class="chip"><b>重置</b> · npm run reset -- memory（默认 dry-run）</span>
+    </div>
+  </div>
+</section>
+
+<section class="stats">
+  <div class="wrap">
+    <div class="reveal">
+      <span class="kicker">都是 AI 写的</span>
+      <h2>仓库里用到的家伙什</h2>
+      <p class="lead">TypeScript 主体、C# 桌宠 MOD、SQLite 全文检索、静态星图页面——没有一行出自我的键盘。</p>
+    </div>
+    <div class="chips reveal">
+      <span class="chip"><b>TypeScript</b> · 插件主体 34 文件</span>
+      <span class="chip"><b>C# / .NET</b> · VPet MOD</span>
+      <span class="chip"><b>SQLite FTS5</b> · trigram + Dice 双路检索</span>
+      <span class="chip"><b>Node.js</b> · 运行时与工具链</span>
+      <span class="chip"><b>Canvas 2D</b> · /star-map 九星系手绘透视</span>
+      <span class="chip"><b>HTTP</b> · 127.0.0.1 本机桥</span>
+      <span class="chip"><b>MIT</b> · 开源许可</span>
+    </div>
+  </div>
+</section>
+
+<section class="cta">
+  <div class="glowline"></div>
+  <div class="wrap">
+    <div class="reveal">
+      <span class="kicker" style="justify-content:center;display:flex">写给同样好奇的人</span>
+      <h2>记忆跟着角色走</h2>
+      <p class="lead" style="margin-inline:auto">
+        这个插件最打动我的不是技术，是那句「欲言又止会攒劲」——hold 不是失败，攒够下一次才真开口。
+        想法是我的，代码全是 AI 写的。我不会编程，但我知道我想要一个什么样的「她」。
+      </p>
+      <div class="hero-actions" style="justify-content:center">
+        <a class="btn btn-primary" href="https://github.com/han0han0le0ni/dsh-daughter" target="_blank" rel="noopener">
+          <svg viewBox="0 0 16 16"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+          访问 GitHub 仓库
+        </a>
+        <a class="btn btn-ghost" href="#top">回到顶部</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap foot">
+    <div>dsh-daughter · 给 DSH 的长期人格与记忆插件 · 请勿在正式工作对话中开启</div>
+    <div><a href="https://github.com/han0han0le0ni" target="_blank" rel="noopener">@han0han0le0ni</a> · 人类出点子，AI 写代码</div>
+  </div>
+</footer>
+<script>
+(function(){
+  "use strict";
+  var reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  /* ---------- 记忆星图背景 ---------- */
+  var cv = document.getElementById("net");
+  var ctx = cv.getContext("2d");
+  var W, H, nodes = [], spikes = [];
+  var COLORS = ["217,119,87", "106,155,204", "176,174,165"];
+
+  function resize(){
+    W = cv.width = cv.offsetWidth * devicePixelRatio;
+    H = cv.height = cv.offsetHeight * devicePixelRatio;
+    var n = Math.min(70, Math.max(28, Math.round(W * H / 42000 / devicePixelRatio)));
+    nodes = [];
+    for (var i = 0; i < n; i++){
+      nodes.push({
+        x: Math.random() * W, y: Math.random() * H,
+        vx: (Math.random() - .5) * .22 * devicePixelRatio,
+        vy: (Math.random() - .5) * .22 * devicePixelRatio,
+        r: (Math.random() * 1.8 + 1.1) * devicePixelRatio,
+        c: COLORS[(Math.random() * COLORS.length) | 0]
+      });
+    }
+  }
+  resize();
+  window.addEventListener("resize", resize);
+
+  var MAX_LINK = 150 * devicePixelRatio;
+  function frame(){
+    ctx.clearRect(0, 0, W, H);
+    var i, j, a, b, dx, dy, d;
+    for (i = 0; i < nodes.length; i++){
+      a = nodes[i];
+      a.x += a.vx; a.y += a.vy;
+      if (a.x < 0 || a.x > W) a.vx *= -1;
+      if (a.y < 0 || a.y > H) a.vy *= -1;
+    }
+    for (i = 0; i < nodes.length; i++){
+      for (j = i + 1; j < nodes.length; j++){
+        a = nodes[i]; b = nodes[j];
+        dx = a.x - b.x; dy = a.y - b.y;
+        d = Math.sqrt(dx * dx + dy * dy);
+        if (d < MAX_LINK){
+          var alpha = (1 - d / MAX_LINK) * .16;
+          ctx.strokeStyle = "rgba(250,249,245," + alpha.toFixed(3) + ")";
+          ctx.lineWidth = devicePixelRatio * .7;
+          ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+          if (!reduce && Math.random() < .0016){
+            spikes.push({x: a.x, y: a.y, tx: b.x, ty: b.y, t: 0, c: a.c});
+          }
+        }
+      }
+    }
+    for (i = spikes.length - 1; i >= 0; i--){
+      var s = spikes[i];
+      s.t += .045;
+      if (s.t >= 1){ spikes.splice(i, 1); continue; }
+      var px = s.x + (s.tx - s.x) * s.t;
+      var py = s.y + (s.ty - s.y) * s.t;
+      ctx.beginPath();
+      ctx.arc(px, py, devicePixelRatio * 2.4, 0, 6.284);
+      ctx.fillStyle = "rgba(" + s.c + ",.9)";
+      ctx.fill();
+    }
+    for (i = 0; i < nodes.length; i++){
+      a = nodes[i];
+      ctx.beginPath();
+      ctx.arc(a.x, a.y, a.r, 0, 6.284);
+      ctx.fillStyle = "rgba(" + a.c + ",.75)";
+      ctx.fill();
+    }
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+
+  /* ---------- 滚动显现 ---------- */
+  var io = new IntersectionObserver(function(es){
+    es.forEach(function(e){
+      if (e.isIntersecting){ e.target.classList.add("in"); io.unobserve(e.target); }
+    });
+  }, {threshold: .12});
+  document.querySelectorAll(".reveal").forEach(function(el, i){
+    el.style.transitionDelay = (i % 4) * 70 + "ms";
+    io.observe(el);
+  });
+
+  /* ---------- 数字滚动 ---------- */
+  function count(el){
+    var target = +el.dataset.count, plus = el.dataset.plus || "", t0 = null;
+    function step(t){
+      if (!t0) t0 = t;
+      var p = Math.min((t - t0) / 1400, 1);
+      var eased = 1 - Math.pow(1 - p, 3);
+      el.textContent = Math.round(target * eased).toLocaleString("en-US") + plus;
+      if (p < 1) requestAnimationFrame(step);
+    }
+    requestAnimationFrame(step);
+  }
+  var so = new IntersectionObserver(function(es){
+    es.forEach(function(e){
+      if (e.isIntersecting){ count(e.target); so.unobserve(e.target); }
+    });
+  }, {threshold: .6});
+  document.querySelectorAll("[data-count]").forEach(function(el){
+    if (reduce){ el.textContent = (+el.dataset.count).toLocaleString("en-US") + (el.dataset.plus || ""); }
+    else so.observe(el);
+  });
+})();
+</script>
+</body>
+</html>

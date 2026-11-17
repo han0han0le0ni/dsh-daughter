@@ -1,0 +1,428 @@
+# dsh-daughter 默认配置模板（对应设计文档第 11 节）
+#
+# 这里是一份"开箱即用"的保守默认值，不含任何个人偏好：
+#   - 所有数值都是代码内置默认值，改这里等价于改默认行为
+#   - 想调整请直接改本文件；升级插件会覆盖本文件，个人配置建议另存备份
+#   - 未实现的配置项（backend）会在启动时告警并忽略；desktop 默认关闭，需显式打开
+version: 1
+character_id: daughter-default
+
+seed: 42
+random_surprise_enabled: true
+
+retrieval:
+  top_k: 5
+  half_life_days: 7
+  surprise_eta: 0.05
+  exclude_archived: true
+  max_candidates: 1000
+  score_weights:
+    semantic: 0.42
+    recency: 0.22
+    weight: 0.16
+    emotion_match: 0.10
+    link_proximity: 0.10
+  min_score: 0.12
+  # 直接命中要求的最低语义分：语义为 0 的事件不算"相关记忆"，交给联想通道（§8.1）
+  min_semantic: 0.01
+  # 回忆重构的门槛：当前情绪与事件快照的 PAD 距离（满量程 1）到这个值才记一条"回看感受"。
+  # 真实库标定：事件两两距离 p50≈0.04、p90≈0.14；0.08 约对四分之一的召回生效，调小则更密。
+  reconstruct_distance: 0.08
+  # 同一条记忆的回看冷却（分钟）：距离门槛挡不住高频召回，一轮十几条两轮就能写满
+  reconstruct_cooldown_minutes: 360
+  # 命中事件若在全文层有更完整记录，就在摘要行后补一句摘录（§4.4）
+  expand_fulltext: true
+  fulltext_excerpt_chars: 120
+  # 相关记忆按「有没有具体原话」挑，不按话题标签：带用户原话的对话优先
+  prefer_quotes: true
+  # 每轮最多保留几条「用户没参与、又没有原话」的模板条目（刷视频/闲聊对答）
+  max_unquoted: 0
+  # FTS 命中但不在权重候选池里的事件，最多合并多少条放行（0 = 关闭）
+  fts_merge_max: 200
+
+association:
+  max_depth: 2
+  max_injected: 2
+  hop_decay: 0.6
+  # 一条字面都没命中时，从"当下情绪最像、时间最近"的记忆顺一跳（§8.2）；
+  # 换对话框后的第一句也靠它续接"上一个对话的结尾"。关掉即完全沉默。
+  fallback_when_no_match: true
+  # 记忆冲突（DEF-09）：同一话题下两条记忆情绪相反时，双方各写一条 contradiction 链接。
+  # 只加链接、不改摘要和标签——「上次说喜欢、这次说讨厌」两份说法并存，不覆盖任何一方。
+  contradiction_enabled: true
+  # 触发矛盾所需的最小 pleasure 差（两条必须一正一负）；调小会更敏感，也更容易误判
+  contradiction_min_gap: 0.4
+
+# 窗口只是"工位"，不是记忆分区：换到另一个对话框，刚在别处说的话仍会被想起（§8.2）
+continuity:
+  enabled: true
+  # 别的窗口里多久以内的话算"刚刚"，会补进当前窗口（分钟）。隔太久就不再当"刚才"提
+  cross_window_minutes: 45
+  # 每轮最多补几条"别处刚说的话"，避免把整个对话历史都塞进来
+  cross_window_max: 2
+
+# "局"（进行中的活动）：同一件事跨窗口、跨轮会被切成一堆事件，这里归并成一个 thread，
+# 注入时给前情摘要而不是单条碎片（§8.2）。纯规则、不调模型：Dice 相似度 + 时间间隔。
+threading:
+  enabled: true
+  # 同一局两次发言的最大间隔（分钟），超过就算新的一局
+  gap_minutes: 45
+  # 标题 Dice 相似度门槛（0–1），达到才算同一局
+  similarity: 0.25
+  # 同一个窗口里，隔多久以内的连续发言并成一局（分钟）：不看话题，
+  # 因为"这一段在干什么"本来就是连续的；换成别的窗口才另起一局。0 = 关
+  same_window_minutes: 10
+  # 一局多久没动静就算结束（分钟）。超过这个时长就算"已结束（一直没动静）"，
+  # 不再当进行中的事往下推，但仍然留在寄存器里当落脚处
+  activity_ttl_minutes: 180
+  # 已结束的局再留多久才彻底出寄存器（分钟）。默认 24 小时：
+  # "昨晚那局"要还能看见，但别让旧账越攒越多
+  closed_retention_minutes: 1440
+  # 收尾话术：听到这些就算这一局结了（标"已结束"再留一会儿），不必等它自己凉。
+  # 判错只是少挂一局，不会丢记忆；想更宽松就往里加词
+  closing_phrases:
+    - 先这样
+    - 不玩了
+    - 不聊了
+    - 下次再说
+    - 回头再说
+    - 就到这儿
+    - 到此为止
+    - 收工
+    - 晚安
+    - 睡了
+  # 前情摘要最多带几轮
+  max_summary_turns: 4
+  # 每轮最多注入几个"进行中的局"
+  max_injected: 2
+  # 局名取哪句：first = 开局那句 / recent = 最近一句 / none = 不自动起名
+  # 对话里说「这局叫 X」可随时手动命名，命名后标题就是这个名字
+  heading_source: first
+
+skills:
+  max_main: 1
+  max_associated: 2
+  maturity_threshold_automate: 0.7
+  min_success_for_freeze: 5
+  min_main_score: 0.25
+  min_associated_score: 0.15
+  # 一轮里至少用到几个工具，才把这次工具序列沉淀成技能草稿（§9.1 draft）
+  min_steps_to_learn: 2
+  # 影子池（DEF-19）：候选版本在同一任务上并行记账，够样本且胜率过线才转正
+  #   - 只有带工具证据的轮次才算样本（"被激活即成功"是自证，不能当训练信号）
+  #   - 转正前会把旧版本整体快照进 previous，可用 rollbackSkill 精确回滚
+  shadow:
+    enabled: true
+    # 最少有效样本（强制 ≥3，避免一次成功就转正）
+    min_samples: 10
+    # 候选胜率下限
+    win_rate: 0.6
+    # 候选胜率要比在用版本高出多少，避免"两边一样好"也转正
+    margin: 0.1
+
+# 行为动机：决策层把"文本相似度"换成动机评分
+#   - 人格只调信号通道的阈值，不直接改分数
+#   - 熟悉度倒 U、记忆三路径、情绪覆盖、情境乘子共同决定最终分数
+#   - enabled=false 时退回旧的相似度打分（便于对照）
+motivation:
+  enabled: true
+  # 人格对阈值的最大影响强度（0 = 人格不影响决策）
+  trait_threshold_gain: 0.25
+  # 阈值下限：外向/宜人拉满也只能把阈值压到这里，避免"零信号也能 act"
+  # 0 = 不设下限（不推荐）。不能大于 skills.min_main_score
+  min_threshold: 0.05
+  # 人格对分数的增益（方向舵）：乘子范围 [1-g, 1+g]
+  # 与 trait_threshold_gain 分工——那个决定"够不够力"，这个决定"更想走哪条路"。
+  # 只影响通道间的比分排序，不会凭空造出信号：signal=0 时分数恒为 0
+  trait_signal_gain: 0.2
+  # 熟悉度倒 U：exposure = uses / (uses + k)
+  familiarity:
+    k: 3
+    peak: 0.45
+    sigma: 0.35
+  # 记忆三路径：结果预期 / 情绪记忆 / 自我效能，权重内部会归一化
+  memory:
+    outcome_weight: 0.4
+    emotion_weight: 0.3
+    efficacy_weight: 0.3
+    half_life_days: 30        # 结果预期按上次使用时间衰减的半衰期
+    lookback_days: 30         # 情绪记忆只看最近多少天的事件
+  # 习得性无助：连续失败到阈值后熔断，冷却按 2 的指数增长
+  breaker:
+    fail_streak: 3
+    base_cooldown_min: 10
+    max_cooldown_min: 1440
+  # 情绪覆盖：命中条件时抬升/降低阈值，总偏移会被 clamp
+  emotion_override:
+    safety_low: 0.35
+    safety_low_offset: 0.10   # 安全感低 → 更谨慎
+    stress_high: 0.7
+    stress_high_offset: 0.08  # 压力高 → 更谨慎
+    pleasure_low: -0.25
+    pleasure_low_offset: 0.06 # 心情低 → 更谨慎
+    arousal_high: 0.4
+    arousal_high_offset: -0.05 # 唤醒高 → 更容易行动
+    fatigue_high: 0.8
+    fatigue_high_offset: 0.08 # 疲劳高 → 更谨慎
+    clamp_min: -0.15
+    clamp_max: 0.20
+  # 情境乘子：社交通道按亲密度放大，其余通道只吃一半影响
+  situation:
+    min_multiplier: 0.85
+    max_multiplier: 1.15
+  # score ≥ ratio × threshold 时为 hold（保留但不主动）
+  hold_ratio: 0.7
+
+# 主动开口：没人说话时，她什么时候会自己开口
+#   - 强度侧（想不想）吃人格、情绪、关系与沉默时长；门槛侧（合不合适）只吃时段与压力
+#   - 想说但忍住会累积"憋着"的压力，攒够了下一次才会真开口
+#   - 冷却期与日上限兜底，避免刷屏
+speak:
+  # 主动开口是自主行为，代码默认关闭；这里显式开启（桌宠没跑的话消息只会落进面板）。
+  enabled: true
+  check_interval_min: 3      # 多久评估一次，不是多久说一次
+  # 活跃档：安静 25 分钟就进入考虑区间，思念 2 小时到半饱和。
+  # 早期 45/180/0.62 在"写代码"场景下要沉默四五个小时才开口，实际等于不会说话。
+  min_idle_min: 25           # 至少安静这么久才开始考虑
+  idle_half_min: 120         # 思念的半饱和时间：沉默 2 小时约 0.5
+  trait_urge_gain: 1         # 人格对强度的放大倍数，0 = 人格不影响
+  threshold: 0.52            # 开口门槛
+  threshold_min: 0.40        # 门槛下限，防止被压成"见谁都说话"
+  refractory_min: 60         # 说过后强制安静
+  max_per_day: 8             # 一天最多主动开口几次
+  quiet_hours: [0, 7]        # 安静时段，支持跨午夜如 [23, 7]
+  quiet_penalty: 0.35        # 安静时段抬升的门槛
+  # 看得见屏幕时按场景抬门槛（需要 connectors/desktop 桥接在跑）：
+  # 会议 0.85 / 游戏 0.7 / 写代码 0.4 / 其它 0.15，乘以这个系数。
+  # 别为了"活跃"把这个调太小：沉默够久时，会议也拦不住。
+  busy_penalty: 0.25
+  hold_ratio: 0.75           # 到门槛的这个比例算"想说但忍住"
+  carry_step: 0.05           # 一次忍住累积多少
+  carry_decay: 0.02          # 没到 hold 时自然消退
+  carry_max: 0.25            # 累积上限
+  jitter: 0.04               # 抖动幅度，避免像定时任务
+  shadow: false              # 影子模式：照常评估只记统计，不投递也不写冷却/计数
+  stats: true                # 按日记录 act/hold/silent 计数，面板看沉默占比
+
+# 外部连接器（DEF-03）：核心只认来源白名单与协议版本，适配器本体在 connectors/ 下。
+# 每个适配器可放 connectors/<source>/connector.json：
+#   { "source": "qq", "protocol": 1, "version": "1.2.0" }
+# 协议版本与核心不一致时该来源会被拒绝；没有清单则按白名单放行（保持旧版兼容）。
+connectors:
+  ingest_sources: [qq, douyin_dm, douyin_content, minecraft, game, android, system]
+  manifests_dir: connectors
+
+# 思考碎碎念（DEF-23）：一个人待着时冒出的短句，只走表达出口。
+# 不写事件、不进入记忆、不占正式回复；与主动开口各自独立开关。
+think:
+  enabled: true
+  max_per_turn: 2            # 一次评估最多几条（上限 2）
+  max_chars: 40              # 单条最大字数（上限 40）
+  min_gap_min: 20            # 两次碎碎念之间的最小间隔
+  threshold: 0.55            # 内在活动强度达到多少才嘟囔
+
+# 表达出口：她主动说的话发给谁
+#   - 多个出口可同时开，并发投递；任一出口失败不影响其它出口
+#   - 留空或全部非法时退回桌宠，避免"开了却没人收到"
+#   - 可用类型：
+#       pet   DSH 内置桌宠 dsh-pet（蓝鱼）：气泡 + 情绪动画，宿主自己拼端口，无需填地址
+#       vpet  旧版 VPet 游戏的事件队列，需要 MOD 轮询（默认）
+#       http  把事件 JSON POST 给任意应用：{ type: http, url: http://127.0.0.1:8080/hook, timeout_ms: 3000 }
+#       file  追加 JSONL，任何本地进程都能 tail -f：{ type: file, path: logs/expression.jsonl }
+#   - pet 出口可选字段：pet（宠物 id，缺省 main）、duration_ms（气泡停留毫秒，0 = 只要动画）、
+#     route（路由段覆盖，缺省 /dsh-pet-7340）、url（缺省用宿主自己的 http://127.0.0.1:<port>）
+expression:
+  enabled: true
+  sinks:
+    - type: vpet
+  # 出厂只配了 vpet 时，若探测到 dsh-pet 在跑就让它接管（两套桌宠各弹一遍没意义）。
+  # 守着 VPet 就改成 false。
+  prefer_pet: true
+
+reflex:
+  enabled: true
+  max_match_ms: 5
+  # 命中即跳过模型调用（G4）。注意：宿主 reject 会丢弃该条用户消息，
+  # 聊天记录里这条消息和回复都不会留下，只在桌宠气泡里可见。
+  short_circuit: false
+
+budget:
+  max_total_tokens: 3000
+  block_caps:
+    persona: 300
+    state_hint: 150
+    event_digest: 1400
+    # 跨窗口块独立于当前话题检索：预算裁剪先动事件块，也动不到它
+    cross_window: 200
+    # 进行中的局：两个窗口共享同一局的前情摘要，优先级最高
+    thread: 200
+    skill_digest: 500
+    association: 300
+    constraint: 120
+
+safety:
+  enabled: true
+  diagnosis_labels_forbidden: true
+  thresholds:
+    stress_level1: 0.7
+    safety_level2: 0.35
+    fatigue_level2: 0.8
+    overdraft_level3: 0.8
+  hysteresis: 0.1
+  level1_min_duration_min: 30
+
+storage:
+  scope: character          # 仅支持 character；其它取值会告警并按角色级运行
+  # 跨会话是否接力「此刻」的 L5（情绪/压力/疲劳/安全感）。事件库与人格始终是角色级。
+  #   true  = 换对话框后接着上一段，按闲置时长自然回落（默认，像人：换房间不清空情绪）
+  #   false = 每个会话从基线重新出生（旧行为，彻底隔离）
+  shared_across_sessions: true
+  # false = L5 只在同一 workspace 内接力，换项目/目录不串味（工作窗口与私人窗口互不污染）
+  shared_across_workspaces: true
+  data_root: .              # 相对于插件根目录；运行时数据都写在这里
+  backend: sqlite
+  # true = 人格/技能/资产/L5/日志写入走文件锁 + 原子写（§5.3）；false 会退化为无锁写并告警
+  single_writer: true
+
+# 本机连接器认证（§12.2）：桥接端点（47612）与桌面连接器（47614）都要求令牌。
+#   - 留空 = 首次启动自动生成 brain/brainstem/connector_token（0600），不会退化成无认证
+#   - 显式填写（≥16 字符）= 固定用它，多机/容器部署时用；填写过短会被忽略并告警
+#   - 任何情况下，浏览器来源（带 Origin / Sec-Fetch-*）的请求一律拒绝，令牌正确也不行
+# MOD 与独立壳需要这个令牌：跑 `npm run connector:token` 可打印并写入指定目录
+security:
+  connector_token: ""
+
+# 认知滤网：写入门控 / 习惯化 / 认知屏蔽 / 忘却（§8.5）
+filter:
+  enabled: true
+  # 来源可信度：同时用于写入门控与检索降权（真人对话恒为 1，永远不会因显著低被丢弃）
+  source_weights:
+    chat: 1.0
+    self_speech: 0.6
+    qq: 1.0
+    douyin_dm: 1.0
+    game: 0.9
+    minecraft: 0.9
+    douyin_content: 0.85
+    android: 0.85
+    system: 0.4
+  # 认知屏蔽：命中即不入库，只记统计
+  shield:
+    sources: []          # 例如 [system] 直接不收系统事件
+    keywords: []         # 例如 [密码, token, 密钥]
+    patterns: []         # 正则，例如 ["^窗口标题"]
+  # 习惯化：同源同题（数字归一化后）在窗口内重复，只累加计数不新增条目
+  habituation:
+    window_minutes: 30
+    # 几乎逐字相同的重复（同一段视频隔几小时又刷到）用更长的窗口：
+    # 30 分钟窗拦不住，真实库里四分之一的事件是同一条记忆的拷贝
+    identical_window_minutes: 1440
+    max_repeat: 3
+  # 同源爆发抑制：外部来源在窗口内最多留几条，超出即丢弃。
+  # 习惯化只认"内容很像"，而抖音这种模板相同、条目不同的输入躲得过去，会一条条写满事件库。
+  # 对话来源不设限：那是真实发生的事，不该被限流。
+  burst:
+    window_minutes: 60
+    max_keep: 3
+    exempt_sources: [chat, qq, douyin_dm]
+  salience:
+    drop_below: 0.2      # 显著性低于此值且来源可信度 ≤0.5 时直接丢弃（0.12 时"前台切换"这类系统事件会漏进来）
+  # 忘却：低显著性 + 从未被想起 + 长期闲置 → 归档（不物理删除）
+  forget:
+    enabled: true
+    idle_days: 30
+    min_salience: 0.2
+  # 入库前内容完整性筛：半截 DSML/工具标记、没有实际内容的条目直接丢
+  content_guard:
+    enabled: true
+    min_content_chars: 2
+    patterns: ['</', '｜｜', 'DSML', 'invoke>', 'calls>', '<|', '|＞']
+
+decay:
+  weight_decay_rate: 0.02
+  recall_boost: 0.05
+  archive_threshold: 0.15
+  archive_idle_days: 90
+  # 边两端都超过这么多天没被召回，tick 里批量降权；低于 link_min_strength 摘掉
+  link_idle_days: 30
+  link_decay_rate: 0.9
+  link_min_strength: 0.05
+
+# 情绪回落：闲置越久，L5 越靠近下面的基线；连续对话时几乎不生效（§14.7）
+polarity_log:
+  enabled: true
+  retention_days: 90
+  include_text_hash: true
+
+emotion_relax:
+  enabled: true
+  rate_per_hour: 0.06
+  idle_hours: 0.5
+  stress_baseline: 0.2
+  fatigue_baseline: 0.15
+  safety_baseline: 0.7
+
+evolution:
+  l1_max_delta_per_write: 0.02
+  min_turns_between_writes: 20
+  log_retention_days: 365
+
+# 性格演化：写实为基——日常闲聊不动人格，只有累积/关键事件才推动
+personality:
+  enabled: true
+  drift_cap: 0.6                # 五维相对出生锚点的最大漂移量（±）
+  critical_threshold: 0.6       # 冲击度 ≥ 此值算关键事件（一次性大幅推进）
+  cumulative_threshold: 0.3     # 冲击度 ≥ 此值算累积经历（小幅推进）
+  critical_step: 0.12
+  cumulative_step: 0.02
+  same_direction_bonus_after: 3 # 同向经历每攒够几次，额外推一把
+  # 修复效率乘数（按依恋底色）：越小越难修；伤害侧按 2 - 该值放大
+  repair:
+    secure: 1.0
+    anxious: 0.34
+    avoidant: 0.25
+    disorganized: 0.2
+  # 出生抽样：区间有界，出生不允许单维 >0.8 或 <0.2；混乱型不可出生，只能演化
+  initial:
+    ranges:
+      openness: [0.45, 0.75]
+      conscientiousness: [0.4, 0.7]
+      extraversion: [0.3, 0.7]
+      agreeableness: [0.45, 0.8]
+      neuroticism: [0.25, 0.65]
+    attachment_priors:
+      secure: 0.7
+      anxious: 0.18
+      avoidant: 0.12
+  evidence_cap: 200             # 证据链保留条数（面板只给事实，不给类型标签）
+
+# 桌面连接器：注册 desktop_observe（看屏幕/截图）与 desktop_input（鼠标键盘窗口）。
+# 光开这里不够，还要把桥跑起来：node connectors/desktop/bridge.mjs（默认 47614）。
+# 写类动作（点击/按键）仍受安全档位熔断，档位 ≥2 时只读放行。
+# 桌面连接器（可选，默认关闭）：开启后她可以截屏、看前台窗口、注入键鼠。
+# 这是本插件里权限最高的一项，只在你明确需要时才打开。
+# 桥接服务本身也要令牌（见 security 段），两者缺一不可。
+desktop:
+  enabled: false
+  bridge_url: http://127.0.0.1:47614
+
+# 抖音联动（可选）：只读 dsh-douyin-browser-local 的共享记忆库，
+# 把新刷到的视频记成她的一条事件（source = douyin_content）。
+#   - 全程只读，绝不写对方的库；没装该插件或库还没建时静默跳过
+#   - 首次启动与长时间关机后只补最近 24 小时，不把上周刷的当成"刚看到"
+douyin:
+  enabled: true
+  memory_db: "~/.dsh/douyin-browser/memory/shared.sqlite"
+  poll_interval_min: 10        # 多久拉一次新记录
+  max_items: 5                 # 单次最多入库几条，避免一口气灌满事件流
+
+# 桌宠联动（可选）：任何一项关掉/缺失，插件行为都与"没有桌宠"一致
+# 没装桌宠也不用改这里——没有心跳时 body_link 自动失效
+vpet:
+  enabled: true
+  body_link:
+    enabled: true          # 桌宠体力/心情 → L5 疲劳/压力，只抬升不写回人格
+    stale_ms: 300000       # 5 分钟没有新心跳视为失效，疲劳/压力自然回落
+    fatigue_weight: 0.5    # 体力越低，疲劳抬升越多
+    stress_weight: 0.3     # 心情越低，压力抬升越多
+    max_influence: 0.6     # 外部信号最多推到 0.6，留余量给对话

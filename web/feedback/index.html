@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>意见反馈 · dsh-daughter</title>
+<style>
+  :root {
+    color-scheme: light;
+    --surface: rgba(255, 255, 255, .66);
+    --surface-strong: rgba(255, 255, 255, .84);
+    --line: rgba(120, 145, 175, .22);
+    --text: #233246;
+    --muted: #65758c;
+    --label: #4b5e78;
+    --accent: #2f8f83;
+    --ok: #2f8f83;
+    --warn: #b9822b;
+    --warn-soft: rgba(185, 130, 43, .12);
+    --err: #c65b4d;
+    --err-soft: rgba(198, 91, 77, .10);
+    --ok-soft: rgba(47, 143, 131, .10);
+    --shadow: 0 8px 30px rgba(38, 63, 92, .10);
+    --wash: radial-gradient(circle at 18% 0%, rgba(214, 238, 234, .62), rgba(240, 246, 252, .46) 58%, rgba(255, 255, 255, .38));
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --surface: rgba(17, 25, 37, .66);
+    --surface-strong: rgba(25, 35, 51, .84);
+    --line: rgba(150, 175, 210, .20);
+    --text: #dce7f5;
+    --muted: #94a5bd;
+    --label: #b5c4d8;
+    --accent: #6cc9b8;
+    --ok: #6cc9b8;
+    --warn: #e0b469;
+    --warn-soft: rgba(224, 180, 105, .14);
+    --err: #ec8072;
+    --err-soft: rgba(236, 128, 114, .12);
+    --ok-soft: rgba(108, 201, 184, .12);
+    --shadow: 0 10px 34px rgba(0, 0, 0, .28);
+    --wash: radial-gradient(circle at 18% 0%, rgba(35, 74, 78, .55), rgba(20, 31, 47, .52) 58%, rgba(12, 20, 31, .48));
+  }
+  * { box-sizing: border-box; }
+  html { background: transparent; }
+  body { margin: 0; padding: 0 18px 30px; background: var(--wash); color: var(--text);
+    font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+  .wrap { max-width: 720px; margin: 0 auto; }
+  .topbar { position: sticky; top: 0; z-index: 10; margin: 0 -18px 16px; padding: 16px 18px 12px;
+    background: var(--surface); backdrop-filter: blur(16px) saturate(1.2); border-bottom: 1px solid var(--line); }
+  .topbar-inner { max-width: 720px; margin: 0 auto; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  h1 { font-size: 17px; margin: 0; color: var(--text); font-weight: 650; }
+  .sub { font-size: 11.5px; color: var(--muted); }
+  .status { font-size: 11.5px; color: var(--muted); }
+  .status b { color: var(--ok); font-weight: 600; }
+  .status .pending { color: var(--warn); }
+  #themeToggle { margin-left: auto; }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 18px;
+    box-shadow: var(--shadow); backdrop-filter: blur(12px) saturate(1.1); }
+  label { display: block; font-size: 11.5px; color: var(--label); margin: 14px 0 6px; }
+  label:first-child { margin-top: 0; }
+  input[type=text], select, textarea {
+    width: 100%; font: inherit; font-size: 12.5px; color: var(--text); background: var(--surface-strong);
+    border: 1px solid var(--line); border-radius: 8px; padding: 9px 11px; outline: none;
+  }
+  textarea { min-height: 140px; resize: vertical; line-height: 1.6; }
+  input:focus, select:focus, textarea:focus { border-color: var(--accent); }
+  ::placeholder { color: var(--muted); opacity: .8; }
+  .check { display: flex; gap: 8px; align-items: flex-start; margin: 14px 0 4px; font-size: 11.5px; color: var(--label); }
+  .check input { margin-top: 2px; accent-color: var(--accent); }
+  .check b { color: var(--ok); font-weight: 600; }
+  .actions { display: flex; gap: 9px; margin-top: 18px; flex-wrap: wrap; }
+  button { font: inherit; font-size: 12px; cursor: pointer; border-radius: 8px; padding: 9px 15px;
+    border: 1px solid var(--line); background: var(--surface-strong); color: var(--label); }
+  button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  button.primary:hover { filter: brightness(1.05); color: #fff; }
+  .note { font-size: 11px; line-height: 1.7; color: var(--muted); margin-top: 16px; }
+  .note b { color: var(--warn); font-weight: 600; }
+  #result { display: none; margin-top: 16px; padding: 12px 14px; border-radius: 9px; font-size: 12px; line-height: 1.7;
+    border: 1px solid var(--accent); background: var(--ok-soft); color: var(--ok); }
+  #result.pending { border-color: var(--warn); background: var(--warn-soft); color: var(--warn); }
+  #result.error { border-color: var(--err); background: var(--err-soft); color: var(--err); }
+  #result a { color: #227a9a; }
+  .counter { font-size: 10.5px; color: var(--muted); text-align: right; margin-top: 5px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="topbar">
+    <div class="topbar-inner">
+      <h1>意见反馈</h1>
+      <span class="sub">投诉、建议或故障都会留一份本地记录，并在有 GitHub 登录态时同步到仓库 Issue</span>
+      <span class="status" id="status">读取状态中…</span>
+      <button id="themeToggle" type="button">深色</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <form id="form">
+      <label for="category">类型</label>
+      <select id="category">
+        <option value="投诉">投诉</option>
+        <option value="意见" selected>意见</option>
+        <option value="故障">故障</option>
+        <option value="其他">其他</option>
+      </select>
+
+      <label for="title">标题</label>
+      <input id="title" type="text" maxlength="120" placeholder="一句话说清是什么事" required>
+
+      <label for="body">具体内容</label>
+      <textarea id="body" maxlength="5000" placeholder="发生了什么、你期望怎样、如果愿意可以写下复现步骤" required></textarea>
+      <div class="counter"><span id="count">0</span> / 5000</div>
+
+      <label for="contact">联系方式（可选）</label>
+      <input id="contact" type="text" maxlength="120" placeholder="邮箱或其他联系方式，不填也能提交">
+
+      <label class="check">
+        <input type="checkbox" id="diagnostics">
+        <span>附带环境信息（插件版本、宿主版本、系统与 Node 版本）。<b>不会附带记忆内容、对话正文或令牌。</b></span>
+      </label>
+
+      <div class="actions">
+        <button class="primary" type="submit" id="submit">提交反馈</button>
+        <button type="button" id="retry">重试同步待发条目</button>
+        <button type="button" id="copy">复制内容</button>
+      </div>
+    </form>
+
+    <div id="result" role="status"></div>
+
+    <p class="note">
+      隐私提醒：<b>不要在反馈里写密码、令牌或私密对话。</b><br>
+      若本机已登录 GitHub CLI（<code>gh auth login</code>）或设置了 <code>DSH_GITHUB_TOKEN</code>，提交后会自动在
+      <a href="https://github.com/han0han0le0ni/dsh-daughter/issues" target="_blank" rel="noopener">仓库意见区</a>
+      创建 Issue；否则内容会先存进本地队列，并给出预填好的 GitHub 页面，你点一下即可发出。
+    </p>
+  </div>
+</div>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  const THEME_KEY = 'dsh-daughter-theme';
+
+  function applyTheme(theme) {
+    document.documentElement.dataset.theme = theme;
+    $('themeToggle').textContent = theme === 'dark' ? '浅色' : '深色';
+  }
+  const forcedTheme = new URLSearchParams(location.search).get('theme');
+  if (forcedTheme === 'dark' || forcedTheme === 'light') localStorage.setItem(THEME_KEY, forcedTheme);
+  applyTheme(localStorage.getItem(THEME_KEY) === 'dark' ? 'dark' : 'light');
+  $('themeToggle').addEventListener('click', () => {
+    const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+    localStorage.setItem(THEME_KEY, next);
+    applyTheme(next);
+  });
+  window.addEventListener('storage', (event) => {
+    if (event.key === THEME_KEY) applyTheme(event.newValue === 'dark' ? 'dark' : 'light');
+  });
+
+  const form = $('form');
+  const result = $('result');
+  const body = $('body');
+  body.addEventListener('input', () => { $('count').textContent = String(body.value.length); });
+
+  async function api(path, options) {
+    const response = await fetch(path, options);
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || `请求失败（${response.status}）`);
+    return data;
+  }
+
+  async function refreshStatus() {
+    try {
+      const data = await api('/feedback/api/status');
+      const pending = data.pending > 0 ? `<span class="pending">待同步 ${data.pending}</span>` : '待同步 0';
+      $('status').innerHTML = `已同步 <b>${data.synced}</b> · ${pending}`;
+      $('retry').disabled = data.pending === 0;
+    } catch (error) {
+      $('status').textContent = `状态读取失败：${error.message}`;
+    }
+  }
+
+  function show(html, kind) {
+    result.className = kind || '';
+    result.innerHTML = html;
+    result.style.display = 'block';
+  }
+
+  function payload() {
+    return {
+      category: $('category').value,
+      title: $('title').value,
+      body: body.value,
+      contact: $('contact').value,
+      includeDiagnostics: $('diagnostics').checked,
+    };
+  }
+
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    $('submit').disabled = true;
+    try {
+      const data = await api('/feedback/api/submit', {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload()),
+      });
+      if (data.status === 'synced') {
+        show(`已同步到仓库 <a href="${data.issueHtmlUrl || data.issueUrl}" target="_blank" rel="noopener">Issue #${data.issueNumber}</a>。感谢反馈。`, '');
+      } else {
+        show(`反馈已保存到本地队列${data.error ? `（同步失败：${data.error}）` : ''}。请点下面的按钮，在 GitHub 页面完成最后一步提交。` +
+          `<br><a href="${data.issueUrl}" target="_blank" rel="noopener">打开预填的 GitHub Issue</a>`, 'pending');
+      }
+      form.reset();
+      $('count').textContent = '0';
+      await refreshStatus();
+    } catch (error) {
+      show(`提交失败：${error.message}`, 'error');
+    } finally {
+      $('submit').disabled = false;
+    }
+  });
+
+  $('retry').addEventListener('click', async () => {
+    $('retry').disabled = true;
+    try {
+      const data = await api('/feedback/api/retry', { method: 'POST' });
+      show(`重试完成：扫描 ${data.scanned} 条，新同步 ${data.synced} 条。`, data.synced ? '' : 'pending');
+      await refreshStatus();
+    } catch (error) {
+      show(`重试失败：${error.message}`, 'error');
+    } finally {
+      $('retry').disabled = false;
+    }
+  });
+
+  $('copy').addEventListener('click', async () => {
+    const data = payload();
+    const text = `[${data.category}] ${data.title}\n\n${data.body}${data.contact ? `\n\n联系方式：${data.contact}` : ''}`;
+    try {
+      await navigator.clipboard.writeText(text);
+      show('已复制到剪贴板，可以贴到任意地方。', '');
+    } catch {
+      show('复制失败，请手动选择文本复制。', 'error');
+    }
+  });
+
+  refreshStatus();
+</script>
+</body>
+</html>

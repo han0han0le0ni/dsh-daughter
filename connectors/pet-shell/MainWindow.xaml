@@ -1,0 +1,22 @@
+<Window x:Class="DshPet.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="DshPet"
+        Width="550" Height="700"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="Transparent"
+        ShowInTaskbar="False"
+        Topmost="True"
+        ResizeMode="NoResize"
+        WindowStartupLocation="Manual"
+        UseLayoutRounding="True"
+        SnapsToDevicePixels="True">
+  <Grid ClipToBounds="True">
+    <Image x:Name="Sprite"
+           Stretch="Fill"
+           HorizontalAlignment="Left"
+           VerticalAlignment="Top"
+           RenderOptions.BitmapScalingMode="HighQuality" />
+  </Grid>
+</Window>

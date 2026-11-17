@@ -1,0 +1,30 @@
+# 依赖
+node_modules/
+*.tsbuildinfo
+
+# 注意：dist/ 故意不忽略。插件从 git 安装（market/index.json 的 git source）
+# 时没有构建步骤，仓库里必须带一份可用的 dist/。改了 src 记得 npm run build 再提交。
+
+# C# 构建产物（VPet MOD 与 pet-shell 都需本地编译，不入库）
+connectors/**/bin/
+connectors/**/obj/
+
+# 运行时数据：这里存的是真实对话记忆、人格状态与会话快照，不入库
+brain/
+archive/
+logs/
+star_map/
+
+# 文档截图可能包含个人界面内容，默认不入库（需要时用 -f 单独加）
+docs/screenshots/
+
+# 连接器令牌：本机秘密，任何时候都不入库
+connectors/**/token.txt
+
+# npm pack 产物
+*.tgz
+
+# 杂项
+*.log
+.DS_Store
+Thumbs.db

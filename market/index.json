@@ -1,0 +1,192 @@
+{
+  "format": 1,
+  "title": {
+    "en": "dsh-daughter",
+    "zh": "dsh-daughter（人格陪伴）"
+  },
+  "description": {
+    "en": "Persona layers, long-term memory, runtime state, skills and reflex matching for DeepSeek Harness. Brain only — bubbles and animations belong to the pet front-end.",
+    "zh": "给 DeepSeek Harness 的大脑：人格分层、长期记忆、运行时状态、技能与条件反射。只管思考与记忆，气泡和动效交给桌宠端。"
+  },
+  "metadata": {
+    "categories": {
+      "memory": {
+        "title": {
+          "en": "Memory",
+          "zh": "记忆"
+        }
+      },
+      "companion": {
+        "title": {
+          "en": "Companion",
+          "zh": "陪伴"
+        }
+      }
+    },
+    "labels": {
+      "persona": {
+        "title": {
+          "en": "Persona",
+          "zh": "人格"
+        }
+      },
+      "memory": {
+        "title": {
+          "en": "Long-term memory",
+          "zh": "长期记忆"
+        }
+      },
+      "vpet": {
+        "title": {
+          "en": "VPet desktop pet",
+          "zh": "VPet 桌宠"
+        }
+      }
+    },
+    "sortKeys": {}
+  },
+  "plugins": [
+    {
+      "name": "dsh-daughter",
+      "title": {
+        "en": "Daughter — Persona & Long-term Memory",
+        "zh": "女儿 · 人格与长期记忆"
+      },
+      "description": {
+        "en": "Five-layer persona (L1–L5), event memory with FTS5 + Dice retrieval, cognitive filter, skill cards with auto-frozen asset packs, ms-level reflex rules, three-tier safety degradation, read-only star map, and an optional VPet-Simulator MOD bridge.",
+        "zh": "五层人格（L1–L5）、事件记忆（FTS5 + Dice 混合检索）、认知滤网、技能卡与自动固化资产包、毫秒级条件反射、三档安全降级、只读脑星图，另附可选的 VPet-Simulator 桌宠 MOD 桥。"
+      },
+      "icon": "icon.svg",
+      "author": "han0han0le0ni",
+      "homepage": "https://github.com/han0han0le0ni/dsh-daughter#readme",
+      "repository": {
+        "url": "https://github.com/han0han0le0ni/dsh-daughter"
+      },
+      "metadata": {
+        "category": "memory",
+        "keywords": [
+          "dsh",
+          "dsh-plugin",
+          "deepseek-harness",
+          "persona",
+          "memory",
+          "long-term-memory",
+          "companion",
+          "desktop-pet",
+          "vpet",
+          "人格",
+          "记忆",
+          "陪伴",
+          "桌宠"
+        ],
+        "labels": [
+          "persona",
+          "memory",
+          "vpet"
+        ],
+        "sortKeys": {}
+      },
+      "versions": [
+        {
+          "version": "0.8.0",
+          "publishTimestamp": 1794849631,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/han0han0le0ni/dsh-daughter.git",
+            "commit": "41fa4424b4dddb96d5f5ba940d5b5753e8c9c67a"
+          }
+        },
+        {
+          "version": "0.7.1",
+          "publishTimestamp": 1794318299,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/han0han0le0ni/dsh-daughter.git",
+            "commit": "8fdca6bbd756db3180e781385de367e4b882358a"
+          }
+        },
+        {
+          "version": "0.7.0",
+          "publishTimestamp": 1794308391,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/han0han0le0ni/dsh-daughter.git",
+            "commit": "b40bab3c74a6b89ebf9f8e025eaf961cca7ceeb7"
+          }
+        },
+        {
+          "version": "0.6.7",
+          "publishTimestamp": 1794286590,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/han0han0le0ni/dsh-daughter.git",
+            "commit": "0dafb9a793b3cf131c950f71c40a3aa3409a208b"
+          }
+        },
+        {
+          "version": "0.6.5",
+          "publishTimestamp": 1794116646,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/han0han0le0ni/dsh-daughter.git",
+            "commit": "7921757ee80db1a670b829a3a62fcf2636d4b90a"
+          }
+        },
+        {
+          "version": "0.6.4",
+          "publishTimestamp": 1794014668,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/han0han0le0ni/dsh-daughter.git",
+            "commit": "56e69b22cf3699897f0982f9021c12c1881bc0fd"
+          }
+        },
+        {
+          "version": "0.6.3",
+          "publishTimestamp": 1794014264,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/han0han0le0ni/dsh-daughter.git",
+            "commit": "9d3411458197517f89591b6652ac054ace4a6259"
+          }
+        },
+        {
+          "version": "0.6.2",
+          "publishTimestamp": 1794013677,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/han0han0le0ni/dsh-daughter.git",
+            "commit": "0a0e6653eebb2ffff1f0b3b05ac08e3b5dbc78ba"
+          }
+        },
+        {
+          "version": "0.6.1",
+          "publishTimestamp": 1794012494,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/han0han0le0ni/dsh-daughter.git",
+            "commit": "42e22cb4ec3f58830a483798f2dfb6340d1c45e6"
+          }
+        },
+        {
+          "version": "0.6.0",
+          "publishTimestamp": 1794011535,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/han0han0le0ni/dsh-daughter.git",
+            "commit": "2f7e1a03e14870351efb58f4691218ef44a9b40d"
+          }
+        },
+        {
+          "version": "0.1.0",
+          "publishTimestamp": 1793866697,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/han0han0le0ni/dsh-daughter.git",
+            "commit": "9bdce8383e8e38cb57ab6857ee06548a4e8edde1"
+          }
+        }
+      ]
+    }
+  ]
+}
