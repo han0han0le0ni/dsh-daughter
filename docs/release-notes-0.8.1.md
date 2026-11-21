@@ -25,6 +25,12 @@
 | `npm run check:link` | PASS 22 / WARN 0 / FAIL 0 |
 | curl 回退链路 | 用无效令牌触发回退，成功到达 GitHub API 并返回 `GitHub 返回 401`（证明 TLS 链路已打通，不会再是 `fetch failed`） |
 
+## 发布状态
+
+- 提交 `3be3e60` 已推 main，注解 tag `v0.8.1` 已推，GitHub Release 已发布。
+- npm `0.8.1` 已发布（`time=2026-11-21T10:49:07.595Z`，unix `1795258147`）。
+- `market/index.json` 已登记 0.8.1 并指向提交 `3be3e60`。
+
 ## 升级说明
 
 - 0.8.0 → 0.8.1 只改反馈同步通道，设置分区、137 项开关、界面与主题均无变化。
