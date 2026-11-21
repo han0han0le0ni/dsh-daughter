@@ -26,6 +26,12 @@
 | `npm run build` | 通过 |
 | `npm run check:link` | PASS 22 / WARN 0 / FAIL 0 |
 
+## 发布状态
+
+- 提交 `8dcf01d` 已推 main，注解 tag `v0.8.2` 已推，GitHub Release 已发布。
+- npm `0.8.2` 已发布（`time=2026-11-21T11:08:38.862Z`，unix `1795259318`）。
+- `market/index.json` 已登记 0.8.2 并指向提交 `8dcf01d`。
+
 ## 升级说明
 
 - 0.8.1 → 0.8.2 只改反馈提交流程，设置分区、137 项开关、界面主题与侧边栏入口均不变。

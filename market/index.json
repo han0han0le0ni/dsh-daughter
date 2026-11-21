@@ -88,6 +88,15 @@
       },
       "versions": [
         {
+          "version": "0.8.2",
+          "publishTimestamp": 1795259318,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/han0han0le0ni/dsh-daughter.git",
+            "commit": "8dcf01d58f6fa170f36a2fa41bf44a3a82fd73cc"
+          }
+        },
+        {
           "version": "0.8.1",
           "publishTimestamp": 1795258147,
           "source": {
