@@ -40,10 +40,11 @@ export declare function rewriteFeedbackQueue(path: string, records: FeedbackReco
 export declare function pendingFeedback(path: string): FeedbackRecord[];
 /** 只使用环境中的令牌或本机 gh 登录态；绝不把令牌写入队列、日志或返回值。 */
 export declare function resolveGitHubToken(): Promise<string | undefined>;
-export declare function submitToGitHub(record: FeedbackRecord, meta: FeedbackMeta, token: string, fetchImpl?: typeof fetch): Promise<{
+interface IssueResult {
     number: number;
     html_url: string;
-}>;
+}
+export declare function submitToGitHub(record: FeedbackRecord, meta: FeedbackMeta, token: string, fetchImpl?: typeof fetch): Promise<IssueResult>;
 /** 写入本地队列；有 GitHub 令牌时直接开 issue，没令牌也能一键跳转到预填页面。 */
 export declare function submitFeedback(path: string, raw: unknown, meta: FeedbackMeta, options?: SubmitOptions): Promise<FeedbackRecord & {
     issueUrl: string;
@@ -59,3 +60,4 @@ export declare function feedbackStatus(path: string): {
     synced: number;
     pending: number;
 };
+export {};

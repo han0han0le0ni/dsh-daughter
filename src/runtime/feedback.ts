@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -155,16 +155,80 @@ export async function resolveGitHubToken(): Promise<string | undefined> {
   }
 }
 
+interface IssueResult { number: number; html_url: string }
+
+function parseIssueResponse(text: string): IssueResult {
+  const data = JSON.parse(text) as Partial<IssueResult>;
+  if (!data.number || !data.html_url) throw new Error('GitHub 响应缺少 issue 编号');
+  return { number: data.number, html_url: data.html_url };
+}
+
+/**
+ * 某些 Windows 环境里 Node 自带 CA 不信任本机代理证书，fetch 会直接抛 fetch failed。
+ * 此时改用系统 curl（走 Windows 证书链）；令牌只经 stdin 的配置传入，不进进程参数与文件。
+ */
+function postViaCurl(url: string, token: string, json: string): Promise<IssueResult> {
+  const escaped = json.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  const config = [
+    'request = POST',
+    `url = "${url}"`,
+    'header = "Accept: application/vnd.github+json"',
+    `header = "Authorization: Bearer ${token}"`,
+    'header = "Content-Type: application/json"',
+    'header = "X-GitHub-Api-Version: 2022-11-28"',
+    `data = "${escaped}"`,
+    'silent',
+    'show-error',
+    'max-time = 25',
+    'write-out = "\\n%{http_code}"',
+  ].join('\n');
+  const args = process.platform === 'win32' ? ['--ssl-no-revoke', '--config', '-'] : ['--config', '-'];
+
+  return new Promise((resolve, reject) => {
+    const child = spawn('curl.exe', args, { stdio: ['pipe', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    const timer = setTimeout(() => {
+      child.kill();
+      reject(new Error('网络请求超时'));
+    }, 30_000);
+    child.stdout.on('data', (chunk) => { stdout += String(chunk); });
+    child.stderr.on('data', (chunk) => { stderr += String(chunk); });
+    child.on('error', (error) => {
+      clearTimeout(timer);
+      reject(new Error(`网络请求失败：${error.message}`));
+    });
+    child.on('close', () => {
+      clearTimeout(timer);
+      const cut = stdout.lastIndexOf('\n');
+      const status = (cut >= 0 ? stdout.slice(cut + 1) : '').trim();
+      const body = cut >= 0 ? stdout.slice(0, cut) : stdout;
+      if (!/^2\d\d$/.test(status)) {
+        reject(new Error(status ? `GitHub 返回 ${status}` : `网络请求失败：${stderr.trim().slice(0, 160) || '无响应'}`));
+        return;
+      }
+      try {
+        resolve(parseIssueResponse(body));
+      } catch (error) {
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
+    });
+    child.stdin.end(config);
+  });
+}
+
 export async function submitToGitHub(
   record: FeedbackRecord,
   meta: FeedbackMeta,
   token: string,
   fetchImpl: typeof fetch = fetch,
-): Promise<{ number: number; html_url: string }> {
+): Promise<IssueResult> {
+  const url = `https://api.github.com/repos/${FEEDBACK_REPO}/issues`;
+  const json = JSON.stringify({ title: buildIssueTitle(record), body: buildIssueBody(record, meta) });
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 25_000);
   try {
-    const response = await fetchImpl(`https://api.github.com/repos/${FEEDBACK_REPO}/issues`, {
+    const response = await fetchImpl(url, {
       method: 'POST',
       headers: {
         accept: 'application/vnd.github+json',
@@ -172,15 +236,14 @@ export async function submitToGitHub(
         'content-type': 'application/json',
         'x-github-api-version': '2022-11-28',
       },
-      body: JSON.stringify({ title: buildIssueTitle(record), body: buildIssueBody(record, meta) }),
+      body: json,
       signal: controller.signal,
     });
-    if (!response.ok) {
-      throw new Error(`GitHub 返回 ${response.status}`);
-    }
-    const data = (await response.json()) as { number?: number; html_url?: string };
-    if (!data.number || !data.html_url) throw new Error('GitHub 响应缺少 issue 编号');
-    return { number: data.number, html_url: data.html_url };
+    if (!response.ok) throw new Error(`GitHub 返回 ${response.status}`);
+    return parseIssueResponse(await response.text());
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith('GitHub 返回')) throw error;
+    return postViaCurl(url, token, json);
   } finally {
     clearTimeout(timer);
   }

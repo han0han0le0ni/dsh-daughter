@@ -113,7 +113,7 @@ test('有令牌时同步到 GitHub，且令牌不进入本地记录', async () =
     return {
       ok: true,
       status: 201,
-      json: async () => ({ number: 42, html_url: 'https://github.com/han0han0le0ni/dsh-daughter/issues/42' }),
+      text: async () => JSON.stringify({ number: 42, html_url: 'https://github.com/han0han0le0ni/dsh-daughter/issues/42' }),
     };
   }) as unknown as typeof fetch;
   try {
@@ -141,7 +141,7 @@ test('重试只补发待同步条目，成功的不重复发送', async () => {
     return {
       ok: true,
       status: 201,
-      json: async () => ({ number: 100 + calls, html_url: `https://github.com/han0han0le0ni/dsh-daughter/issues/${100 + calls}` }),
+      text: async () => JSON.stringify({ number: 100 + calls, html_url: `https://github.com/han0han0le0ni/dsh-daughter/issues/${100 + calls}` }),
     };
   }) as unknown as typeof fetch;
   try {
