@@ -123,9 +123,7 @@
       </label>
 
       <div class="actions">
-        <button class="primary" type="submit" id="submit">提交反馈</button>
-        <button type="button" id="retry">重试同步待发条目</button>
-        <button type="button" id="copy">复制内容</button>
+        <button class="primary" type="submit" id="submit">提交</button>
       </div>
     </form>
 
@@ -172,12 +170,19 @@
     return data;
   }
 
+  let autoRetried = false;
+
   async function refreshStatus() {
     try {
       const data = await api('/feedback/api/status');
       const pending = data.pending > 0 ? `<span class="pending">待同步 ${data.pending}</span>` : '待同步 0';
       $('status').innerHTML = `已同步 <b>${data.synced}</b> · ${pending}`;
-      $('retry').disabled = data.pending === 0;
+      if (data.pending > 0 && !autoRetried) {
+        autoRetried = true;
+        const result = await api('/feedback/api/retry', { method: 'POST' });
+        if (result.synced > 0) show(`已自动补发 ${result.synced} 条反馈。`, '');
+        await refreshStatus();
+      }
     } catch (error) {
       $('status').textContent = `状态读取失败：${error.message}`;
     }
@@ -207,10 +212,9 @@
         method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload()),
       });
       if (data.status === 'synced') {
-        show(`已同步到仓库 <a href="${data.issueHtmlUrl || data.issueUrl}" target="_blank" rel="noopener">Issue #${data.issueNumber}</a>。感谢反馈。`, '');
+        show(`已提交，仓库 Issue <a href="${data.issueHtmlUrl || data.issueUrl}" target="_blank" rel="noopener">#${data.issueNumber}</a>。感谢反馈。`, '');
       } else {
-        show(`反馈已保存到本地队列${data.error ? `（同步失败：${data.error}）` : ''}。请点下面的按钮，在 GitHub 页面完成最后一步提交。` +
-          `<br><a href="${data.issueUrl}" target="_blank" rel="noopener">打开预填的 GitHub Issue</a>`, 'pending');
+        show(`已保存到本地，网络恢复后会自动补发。<a href="${data.issueUrl}" target="_blank" rel="noopener">手动提交</a>`, 'pending');
       }
       form.reset();
       $('count').textContent = '0';
@@ -219,30 +223,6 @@
       show(`提交失败：${error.message}`, 'error');
     } finally {
       $('submit').disabled = false;
-    }
-  });
-
-  $('retry').addEventListener('click', async () => {
-    $('retry').disabled = true;
-    try {
-      const data = await api('/feedback/api/retry', { method: 'POST' });
-      show(`重试完成：扫描 ${data.scanned} 条，新同步 ${data.synced} 条。`, data.synced ? '' : 'pending');
-      await refreshStatus();
-    } catch (error) {
-      show(`重试失败：${error.message}`, 'error');
-    } finally {
-      $('retry').disabled = false;
-    }
-  });
-
-  $('copy').addEventListener('click', async () => {
-    const data = payload();
-    const text = `[${data.category}] ${data.title}\n\n${data.body}${data.contact ? `\n\n联系方式：${data.contact}` : ''}`;
-    try {
-      await navigator.clipboard.writeText(text);
-      show('已复制到剪贴板，可以贴到任意地方。', '');
-    } catch {
-      show('复制失败，请手动选择文本复制。', 'error');
     }
   });
 

@@ -5,7 +5,7 @@
 | 插件名 | dsh-daughter |
 | 文档类型 | 设计文档 / 技术评审稿（不含实现代码） |
 | 目标运行形态 | TypeScript / Node 插件 |
-| 状态 | 待评审（P0–P8 已落地并核对，P9 3/7；核对基准：当前版本 <!--docsync:version-->0.8.1<!--/docsync-->，`npm test` <!--docsync:test_count-->309<!--/docsync--> 项、`npm run check:link` <!--docsync:check_items-->22<!--/docsync--> 项全绿、`tsc --noEmit` 无错） |
+| 状态 | 待评审（P0–P8 已落地并核对，P9 3/7；核对基准：当前版本 <!--docsync:version-->0.8.2<!--/docsync-->，`npm test` <!--docsync:test_count-->309<!--/docsync--> 项、`npm run check:link` <!--docsync:check_items-->22<!--/docsync--> 项全绿、`tsc --noEmit` 无错） |
 | 日期 | 2026-11-02（v0.2 2026-11-04；v0.3 加固 + 桌宠弱耦合 2026-11-04；v0.4 认知滤网 + 星图观感 + 记忆情感闭环 2026-11-05；v0.5 性格多样性演化 2026-11-06） |
 | 适用范围 | 人格陪伴、长期记忆、技能与资产、条件反射、多应用连接 |
 

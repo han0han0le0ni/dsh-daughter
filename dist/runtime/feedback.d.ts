@@ -44,12 +44,14 @@ interface IssueResult {
     number: number;
     html_url: string;
 }
+/** 传输方式按平台一次选好：Windows 走 curl，其余平台走 fetch；测试可注入 fetch。 */
 export declare function submitToGitHub(record: FeedbackRecord, meta: FeedbackMeta, token: string, fetchImpl?: typeof fetch): Promise<IssueResult>;
-/** 写入本地队列；有 GitHub 令牌时直接开 issue，没令牌也能一键跳转到预填页面。 */
-export declare function submitFeedback(path: string, raw: unknown, meta: FeedbackMeta, options?: SubmitOptions): Promise<FeedbackRecord & {
+type FeedbackResult = FeedbackRecord & {
     issueUrl: string;
-}>;
-/** 用户后来登录了 gh 或设置了令牌时，把此前留下的待同步条目补发出去。 */
+};
+/** 用户提交：校验 → 同步一次 → 写一条最终记录。 */
+export declare function submitFeedback(path: string, raw: unknown, meta: FeedbackMeta, options?: SubmitOptions): Promise<FeedbackResult>;
+/** 打开面板时自动补发之前没发出去的条目；用户不需要再点按钮。 */
 export declare function retryPendingFeedback(path: string, meta: FeedbackMeta, options?: SubmitOptions): Promise<{
     scanned: number;
     synced: number;

@@ -163,9 +163,28 @@ function parseIssueResponse(text: string): IssueResult {
   return { number: data.number, html_url: data.html_url };
 }
 
+function postViaFetch(url: string, token: string, json: string, fetchImpl: typeof fetch): Promise<IssueResult> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 25_000);
+  return fetchImpl(url, {
+    method: 'POST',
+    headers: {
+      accept: 'application/vnd.github+json',
+      authorization: `Bearer ${token}`,
+      'content-type': 'application/json',
+      'x-github-api-version': '2022-11-28',
+    },
+    body: json,
+    signal: controller.signal,
+  }).then(async (response) => {
+    if (!response.ok) throw new Error(`GitHub 返回 ${response.status}`);
+    return parseIssueResponse(await response.text());
+  }).finally(() => clearTimeout(timer));
+}
+
 /**
- * 某些 Windows 环境里 Node 自带 CA 不信任本机代理证书，fetch 会直接抛 fetch failed。
- * 此时改用系统 curl（走 Windows 证书链）；令牌只经 stdin 的配置传入，不进进程参数与文件。
+ * Windows 上 Node 自带 CA 常不信任本机代理证书，直接用系统 curl（走 Windows 证书链）。
+ * 令牌只经 stdin 配置传入，不进进程参数与文件。
  */
 function postViaCurl(url: string, token: string, json: string): Promise<IssueResult> {
   const escaped = json.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
@@ -177,9 +196,7 @@ function postViaCurl(url: string, token: string, json: string): Promise<IssueRes
     'header = "Content-Type: application/json"',
     'header = "X-GitHub-Api-Version: 2022-11-28"',
     `data = "${escaped}"`,
-    'silent',
-    'show-error',
-    'max-time = 25',
+    'silent', 'show-error', 'max-time = 25',
     'write-out = "\\n%{http_code}"',
   ].join('\n');
   const args = process.platform === 'win32' ? ['--ssl-no-revoke', '--config', '-'] : ['--config', '-'];
@@ -188,35 +205,26 @@ function postViaCurl(url: string, token: string, json: string): Promise<IssueRes
     const child = spawn('curl.exe', args, { stdio: ['pipe', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
-    const timer = setTimeout(() => {
-      child.kill();
-      reject(new Error('网络请求超时'));
-    }, 30_000);
+    const timer = setTimeout(() => { child.kill(); reject(new Error('网络请求超时')); }, 30_000);
     child.stdout.on('data', (chunk) => { stdout += String(chunk); });
     child.stderr.on('data', (chunk) => { stderr += String(chunk); });
-    child.on('error', (error) => {
-      clearTimeout(timer);
-      reject(new Error(`网络请求失败：${error.message}`));
-    });
+    child.on('error', (error) => { clearTimeout(timer); reject(new Error(`网络请求失败：${error.message}`)); });
     child.on('close', () => {
       clearTimeout(timer);
       const cut = stdout.lastIndexOf('\n');
       const status = (cut >= 0 ? stdout.slice(cut + 1) : '').trim();
-      const body = cut >= 0 ? stdout.slice(0, cut) : stdout;
       if (!/^2\d\d$/.test(status)) {
         reject(new Error(status ? `GitHub 返回 ${status}` : `网络请求失败：${stderr.trim().slice(0, 160) || '无响应'}`));
         return;
       }
-      try {
-        resolve(parseIssueResponse(body));
-      } catch (error) {
-        reject(error instanceof Error ? error : new Error(String(error)));
-      }
+      try { resolve(parseIssueResponse(cut >= 0 ? stdout.slice(0, cut) : stdout)); }
+      catch (error) { reject(error instanceof Error ? error : new Error(String(error))); }
     });
     child.stdin.end(config);
   });
 }
 
+/** 传输方式按平台一次选好：Windows 走 curl，其余平台走 fetch；测试可注入 fetch。 */
 export async function submitToGitHub(
   record: FeedbackRecord,
   meta: FeedbackMeta,
@@ -225,28 +233,9 @@ export async function submitToGitHub(
 ): Promise<IssueResult> {
   const url = `https://api.github.com/repos/${FEEDBACK_REPO}/issues`;
   const json = JSON.stringify({ title: buildIssueTitle(record), body: buildIssueBody(record, meta) });
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 25_000);
-  try {
-    const response = await fetchImpl(url, {
-      method: 'POST',
-      headers: {
-        accept: 'application/vnd.github+json',
-        authorization: `Bearer ${token}`,
-        'content-type': 'application/json',
-        'x-github-api-version': '2022-11-28',
-      },
-      body: json,
-      signal: controller.signal,
-    });
-    if (!response.ok) throw new Error(`GitHub 返回 ${response.status}`);
-    return parseIssueResponse(await response.text());
-  } catch (error) {
-    if (error instanceof Error && error.message.startsWith('GitHub 返回')) throw error;
-    return postViaCurl(url, token, json);
-  } finally {
-    clearTimeout(timer);
-  }
+  if (fetchImpl !== fetch) return postViaFetch(url, token, json, fetchImpl);
+  if (process.platform === 'win32') return postViaCurl(url, token, json);
+  return postViaFetch(url, token, json, fetch);
 }
 
 function makeRecord(input: FeedbackInput, now: Date): FeedbackRecord {
@@ -258,57 +247,78 @@ function queueReport(path: string) {
   return { total: records.length, synced: records.filter((r) => r.status === 'synced').length, pending: records.filter((r) => r.status === 'pending').length };
 }
 
-/** 写入本地队列；有 GitHub 令牌时直接开 issue，没令牌也能一键跳转到预填页面。 */
+type FeedbackResult = FeedbackRecord & { issueUrl: string };
+
+async function tokenFor(options: SubmitOptions): Promise<string | undefined> {
+  return options.token === undefined ? await resolveGitHubToken() : options.token;
+}
+
+/** 一条反馈只有两种结果：同步成功，或留下预填链接。新提交与补发共用这一条路径。 */
+async function sendOne(
+  record: FeedbackRecord,
+  meta: FeedbackMeta,
+  options: SubmitOptions,
+  token: string | undefined,
+): Promise<FeedbackResult> {
+  if (!token) return { ...record, issueUrl: buildIssueUrl(record, meta) };
+  try {
+    const issue = await submitToGitHub(record, meta, token, options.fetchImpl);
+    return {
+      ...record,
+      status: 'synced',
+      issueNumber: issue.number,
+      issueHtmlUrl: issue.html_url,
+      issueUrl: issue.html_url,
+    };
+  } catch (error) {
+    return {
+      ...record,
+      error: (error instanceof Error ? error.message : String(error)).slice(0, 200),
+      issueUrl: buildIssueUrl(record, meta),
+    };
+  }
+}
+
+/** 用户提交：校验 → 同步一次 → 写一条最终记录。 */
 export async function submitFeedback(
   path: string,
   raw: unknown,
   meta: FeedbackMeta,
   options: SubmitOptions = {},
-): Promise<FeedbackRecord & { issueUrl: string }> {
-  const input = normalizeFeedback(raw);
-  const record = makeRecord(input, options.now?.() ?? new Date());
-  appendFeedbackRecord(path, record);
-
-  const token = options.token === undefined ? await resolveGitHubToken() : options.token;
-  if (!token) {
-    return { ...record, issueUrl: buildIssueUrl(record, meta) };
-  }
-  try {
-    const issue = await submitToGitHub(record, meta, token, options.fetchImpl);
-    const updated: FeedbackRecord = { ...record, status: 'synced', issueNumber: issue.number, issueHtmlUrl: issue.html_url };
-    rewriteFeedbackQueue(path, readFeedbackQueue(path).map((item) => (item.id === record.id ? updated : item)));
-    return { ...updated, issueUrl: issue.html_url };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    const updated: FeedbackRecord = { ...record, error: message.slice(0, 200) };
-    rewriteFeedbackQueue(path, readFeedbackQueue(path).map((item) => (item.id === record.id ? updated : item)));
-    return { ...updated, issueUrl: buildIssueUrl(record, meta) };
-  }
+): Promise<FeedbackResult> {
+  const record = makeRecord(normalizeFeedback(raw), options.now?.() ?? new Date());
+  const result = await sendOne(record, meta, options, await tokenFor(options));
+  appendFeedbackRecord(path, result);
+  return result;
 }
 
-/** 用户后来登录了 gh 或设置了令牌时，把此前留下的待同步条目补发出去。 */
+/** 打开面板时自动补发之前没发出去的条目；用户不需要再点按钮。 */
 export async function retryPendingFeedback(
   path: string,
   meta: FeedbackMeta,
   options: SubmitOptions = {},
 ): Promise<{ scanned: number; synced: number }> {
   const waiting = pendingFeedback(path).slice(0, 20);
-  if (waiting.length === 0) return { scanned: 0, synced: 0 };
-  const token = options.token === undefined ? await resolveGitHubToken() : options.token;
-  if (!token) return { scanned: waiting.length, synced: 0 };
+  const token = await tokenFor(options);
+  if (waiting.length === 0 || !token) return { scanned: waiting.length, synced: 0 };
 
-  const byId = new Map(waiting.map((item) => [item.id, item]));
+  const all = readFeedbackQueue(path);
+  const byId = new Map(all.map((item) => [item.id, item]));
   let synced = 0;
-  for (const record of waiting) {
-    try {
-      const issue = await submitToGitHub(record, meta, token, options.fetchImpl);
-      byId.set(record.id, { ...record, status: 'synced', issueNumber: issue.number, issueHtmlUrl: issue.html_url });
+  for (const pending of waiting) {
+    const record = byId.get(pending.id);
+    if (!record) continue;
+    const result = await sendOne(record, meta, options, token);
+    if (result.status === 'synced') {
+      record.status = 'synced';
+      record.issueNumber = result.issueNumber;
+      record.issueHtmlUrl = result.issueHtmlUrl;
+      delete record.error;
       synced += 1;
-    } catch {
-      // 单条失败不影响其余条目，状态保持 pending，下次仍可重试
+    } else if (result.error) {
+      record.error = result.error;
     }
   }
-  const all = readFeedbackQueue(path).map((item) => byId.get(item.id) ?? item);
   rewriteFeedbackQueue(path, all.slice(-MAX_QUEUE));
   return { scanned: waiting.length, synced };
 }
