@@ -69,16 +69,27 @@ export declare function rollbackSkill(store: Store, skillId: string, now: string
 export declare function bumpSkill(store: Store, skill: SkillCard, success: boolean, config: DaughterConfig, now: string): SkillCard;
 /**
  * 从一次成功的工具序列里沉淀技能草稿（§9.1「draft：新学技能」）。
- * 纯启发式：只看工具序列，不调用模型；同样的工具序列只沉淀一次。
+ * 纯启发式：只看工具序列，不调用模型；相同工具集合只沉淀一次，包括顺序变体。
  */
 export declare function learnDraftSkill(store: Store, config: DaughterConfig, input: {
     userText: string;
     tools: string[];
     now: string;
+    proposal?: boolean;
 }): {
     skill: SkillCard;
     evolutionId: string;
 } | null;
+/** 聊天里的显式确认口令：只接受完整命令，避免把普通聊天里的"同意"当成授权 */
+export declare function parseSkillProposalCommand(text: string): {
+    skillId: string;
+    approve: boolean;
+} | null;
+/** 提案确认后才生成可执行草稿，并建立影子试用；拒绝则永久停用这一份提案 */
+export declare function reviewSkillProposal(store: Store, skillId: string, approve: boolean, now: string): {
+    skill: SkillCard | null;
+    changed: boolean;
+};
 /** 按技能形态决定固化后的资产类型，与设计文档 4.5 的四类资产对应 */
 export declare function classifyAssetKind(skill: SkillCard): AssetKind;
 /** 成熟度与成功次数达标后固化为资产包，按技能形态区分 MAC/CON/CMB/MOT */

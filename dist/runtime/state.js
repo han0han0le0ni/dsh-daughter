@@ -1,4 +1,5 @@
 import { clamp01, clampPad } from '../util.js';
+import { mixFromPad, relaxEmotionMix, updateEmotionMix } from './affect.js';
 const POSITIVE_WORDS = [
     '好', '喜欢', '开心', '高兴', '谢谢', '厉害', '不错', '爱', '舒服', '顺利', '棒',
     '满意', '放心', '期待', '温暖', '踏实', '有意思', '感动', '轻松', '靠谱',
@@ -41,6 +42,7 @@ export function createInitialL5(characterId, sessionId, now, persona, overdraft)
         sessionId,
         characterId,
         emotion: { ...persona.l1.moodBaseline },
+        emotionMix: mixFromPad(persona.l1.moodBaseline),
         stress: 0.2,
         safety: 0.7,
         fatigue: 0.15,
@@ -77,6 +79,7 @@ export function carryL5(previous, sessionId, now, persona, config) {
             dominance: pull(previous.emotion.dominance, baseline.dominance),
         },
         stress: pull(previous.stress, relax.stress_baseline),
+        emotionMix: relaxEmotionMix(previous.emotionMix ?? mixFromPad(previous.emotion), mixFromPad(baseline), ratio),
         fatigue: pull(previous.fatigue, relax.fatigue_baseline),
         safety: pull(previous.safety, relax.safety_baseline),
         // 生理信号是"当时那个桌宠"的状态，跨会话不继承，等新会话自己上报
@@ -109,6 +112,7 @@ export function updateL5(prev, text, now, persona) {
     return {
         ...prev,
         emotion: nextEmotion,
+        emotionMix: updateEmotionMix(prev.emotionMix ?? mixFromPad(prev.emotion), detail, exclamatory),
         stress: nextStress,
         safety: nextSafety,
         fatigue: nextFatigue,

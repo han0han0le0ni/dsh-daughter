@@ -1,6 +1,7 @@
-import type { L1Baseline, L2Relationship, L3Cognition, L4Contextual, PersonaBundle } from '../types.js';
+import type { BondEmotion, EmotionMix, L1Baseline, L2Relationship, L3Cognition, L4Contextual, PersonaBundle } from '../types.js';
 import type { Store } from '../store.js';
 import { DEFAULT_L1, DEFAULT_L2, DEFAULT_L3, DEFAULT_L4 } from '../store.js';
+import { bondFromL2, mixFromPad } from './affect.js';
 import { localDayKey } from './speak.js';
 import { readSpeakStats } from './speak-stats.js';
 
@@ -136,21 +137,69 @@ function l1Group(current: L1Baseline, base: L1Baseline): StarMapGroup {
   return { id: 'L1', title: 'L1 人格基线', subtitle: '出厂默认 → 当前', params };
 }
 
+const BOND_FIELDS = [
+  ['affection', '亲近'],
+  ['trust', '信任'],
+  ['hurt', '委屈'],
+  ['resentment', '怨意'],
+  ['longing', '想念'],
+] as const;
+
+const MIX_FIELDS = [
+  ['joy', '喜悦'],
+  ['sadness', '悲伤'],
+  ['anger', '怒气'],
+  ['fear', '不安'],
+  ['disgust', '反感'],
+  ['surprise', '惊讶'],
+] as const;
+
+/** 对人情感逐项展示；只有真实冲突达到可见强度时才加结论行，数值仍全部保留 */
+function appendBondParams(
+  params: StarMapParam[],
+  target: 'user' | 'stranger',
+  bond: BondEmotion,
+  base?: BondEmotion,
+): void {
+  const targetLabel = target === 'user' ? '对主人' : '对陌生人';
+  for (const [key, label] of BOND_FIELDS) {
+    params.push(param(`bonds.${target}.${key}`, `${targetLabel} · ${label}`, bond[key], base?.[key]));
+  }
+  if (bond.affection >= 0.4 && (bond.resentment >= 0.2 || bond.hurt >= 0.25)) {
+    params.push(
+      param(`bonds.${target}.coexistence`, `${targetLabel} · 共存状态`, '爱恨共存：亲近与不满并存', undefined, '成分独立计强，不互相抵消'),
+    );
+  }
+}
+
+/** 心情冲突只标"喜悦与负向成分并存"，其余组合保留数值，不急着下结论 */
+function mixCoexistence(mix: EmotionMix): string | null {
+  if (mix.joy < 0.25) return null;
+  const negatives = MIX_FIELDS.filter(([key]) => key !== 'joy' && key !== 'surprise' && mix[key] >= 0.25);
+  if (negatives.length === 0) return null;
+  return `苦乐参半：喜悦与${negatives.map(([, label]) => label).join('、')}并存`;
+}
+
 function l2Group(current: L2Relationship, base: L2Relationship): StarMapGroup {
-  return {
-    id: 'L2',
-    title: 'L2 依恋与关系',
-    subtitle: '对「你」的关系底色',
-    params: [
-      param('attachmentAnxiety', '依恋焦虑', current.attachmentAnxiety, base.attachmentAnxiety),
-      param('attachmentAvoidance', '依恋回避', current.attachmentAvoidance, base.attachmentAvoidance),
-      param('trustBaseline', '信任基线', current.trustBaseline, base.trustBaseline),
-      param('relationshipDepth', '关系深度', current.relationshipDepth, base.relationshipDepth),
-      param('relationshipStage', '关系阶段', STAGE_LABEL[current.relationshipStage] ?? current.relationshipStage),
-      param('coreNeeds', '核心需求', current.coreNeeds),
-      param('updatedAt', '更新时间', current.updatedAt),
-    ],
-  };
+  const params: StarMapParam[] = [
+    param('attachmentAnxiety', '依恋焦虑', current.attachmentAnxiety, base.attachmentAnxiety),
+    param('attachmentAvoidance', '依恋回避', current.attachmentAvoidance, base.attachmentAvoidance),
+    param('trustBaseline', '信任基线', current.trustBaseline, base.trustBaseline),
+    param('relationshipDepth', '关系深度', current.relationshipDepth, base.relationshipDepth),
+    param('relationshipStage', '关系阶段', STAGE_LABEL[current.relationshipStage] ?? current.relationshipStage),
+    param('coreNeeds', '核心需求', current.coreNeeds),
+  ];
+  // 主人是主关系：旧存档没有 bonds 时也展示由 L2 基线推导的当前值
+  appendBondParams(
+    params,
+    'user',
+    current.bonds?.user ?? bondFromL2(current, current.updatedAt),
+    bondFromL2(base, base.updatedAt),
+  );
+  // 陌生人只有真正积累过对象级情感才出现，避免给从未见过的人虚构一份关系
+  if (current.bonds?.stranger) appendBondParams(params, 'stranger', current.bonds.stranger);
+  params.push(param('updatedAt', '更新时间', current.updatedAt));
+  return { id: 'L2', title: 'L2 依恋与关系', subtitle: '关系底色与可共存的对人情感', params };
 }
 
 function l3Group(current: L3Cognition, base: L3Cognition): StarMapGroup {
@@ -237,23 +286,32 @@ function runtimeGroups(store: Store, now: string): StarMapGroup[] {
   const l5 = sessions[0];
 
   if (l5) {
+    const mix = l5.emotionMix ?? mixFromPad(l5.emotion);
+    const coexistence = mixCoexistence(mix);
+    const params: StarMapParam[] = [
+      param('emotion.pleasure', '愉悦', l5.emotion.pleasure),
+      param('emotion.arousal', '唤醒', l5.emotion.arousal),
+      param('emotion.dominance', '掌控', l5.emotion.dominance),
+      ...MIX_FIELDS.map(([key, label]) => param(`emotionMix.${key}`, `心情 · ${label}`, mix[key])),
+    ];
+    if (coexistence) {
+      params.push(param('emotionMix.coexistence', '心情 · 共存状态', coexistence, undefined, '成分独立计强，不平均成平静'));
+    }
+    params.push(
+      param('stress', '压力', l5.stress),
+      param('safety', '安全感', l5.safety),
+      param('fatigue', '疲劳', l5.fatigue),
+      param('boundary', '边界', l5.boundary),
+      param('emotionalOverdraft', '会话内透支', l5.emotionalOverdraft),
+      param('activeSubPersonaId', '当前子人格', l5.activeSubPersonaId ?? '未标注'),
+      param('lastTickAt', '最后心跳', l5.lastTickAt),
+      param('snapshotAt', '快照时间', l5.snapshotAt),
+    );
     groups.push({
       id: 'L5',
       title: 'L5 当下状态',
-      subtitle: `最近会话 ${l5.sessionId.slice(0, 16)}`,
-      params: [
-        param('emotion.pleasure', '愉悦', l5.emotion.pleasure),
-        param('emotion.arousal', '唤醒', l5.emotion.arousal),
-        param('emotion.dominance', '掌控', l5.emotion.dominance),
-        param('stress', '压力', l5.stress),
-        param('safety', '安全感', l5.safety),
-        param('fatigue', '疲劳', l5.fatigue),
-        param('boundary', '边界', l5.boundary),
-        param('emotionalOverdraft', '会话内透支', l5.emotionalOverdraft),
-        param('activeSubPersonaId', '当前子人格', l5.activeSubPersonaId ?? '未标注'),
-        param('lastTickAt', '最后心跳', l5.lastTickAt),
-        param('snapshotAt', '快照时间', l5.snapshotAt),
-      ],
+      subtitle: `最近会话 ${l5.sessionId.slice(0, 16)} · PAD 与可共存心情`,
+      params,
     });
   } else {
     groups.push({ id: 'L5', title: 'L5 当下状态', subtitle: '暂无会话快照', params: [] });
@@ -296,7 +354,26 @@ function programMemoryGroup(store: Store): StarMapGroup {
         undefined,
         `${skill.status} · 成功 ${skill.successCount} 次`,
       ),
+      param(
+        `skill.${skill.id}.approval`,
+        `${skill.name} · 学习确认`,
+        skill.approval === 'pending' ? '待主人确认' : skill.approval === 'rejected' ? '已拒绝' : skill.approval === 'approved' ? '已确认' : '无需提案',
+      ),
     );
+    if (skill.approval === 'pending') {
+      params.push(param(`skill.${skill.id}.review`, `${skill.name} · 确认口令`, `确认学习 ${skill.id}`, undefined, `拒绝则发送：拒绝学习 ${skill.id}`));
+    }
+    if (skill.trialOnly) {
+      params.push(
+        param(
+          `skill.${skill.id}.trial`,
+          `${skill.name} · 影子试用`,
+          `${skill.shadow?.success ?? 0} 成功 / ${skill.shadow?.fail ?? 0} 失败`,
+          undefined,
+          '达到样本数与胜率后才转正',
+        ),
+      );
+    }
   }
   for (const rule of store.loadReflexRules()) {
     const trigger = rule.match.type === 'keyword' ? rule.match.patterns[0] ?? rule.id : rule.id;

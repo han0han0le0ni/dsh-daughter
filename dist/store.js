@@ -608,6 +608,22 @@ export class Store {
     saveSkill(skill) {
         this.writeLocked(this.skillPath(skill.id), YAML.stringify(skill));
     }
+    /** 只删除当前角色自己的技能卡；路径与角色都校验，固化资产不连带删除 */
+    deleteSkill(id) {
+        if (!/^[\w.-]{1,128}$/.test(id) || id === '.' || id === '..')
+            return false;
+        const path = this.skillPath(id);
+        return withFileLock(path, () => {
+            const skill = this.loadSkill(id);
+            if (!skill || skill.characterId !== this.characterId)
+                return false;
+            unlinkSync(path);
+            return true;
+        }, {
+            enabled: this.lockEnabled,
+            onTimeout: () => this.logger.warn('dsh-daughter: 技能删除写锁超时，降级为无锁删除', { id }),
+        });
+    }
     loadSkill(id) {
         const path = this.skillPath(id);
         if (!existsSync(path))

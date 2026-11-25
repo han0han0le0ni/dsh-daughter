@@ -13,6 +13,13 @@ export const defaultConfig: DaughterConfig = {
   retrieval: {
     top_k: 5,
     half_life_days: 7,
+    forgetting: {
+      enabled: true,
+      base_stability_days: 120,
+      arousal_gain: 0.9,
+      pleasure_gain: 0.4,
+      weight_gain: 0.8,
+    },
     surprise_eta: 0.05,
     exclude_archived: true,
     max_candidates: 1000,
@@ -140,6 +147,16 @@ export const defaultConfig: DaughterConfig = {
     shadow: false,
     // 统计默认开：只记计数不记正文，代价可以忽略
     stats: true,
+    // 会话窗口投递默认关：它会让模型真的回一轮，比重在桌宠气泡上；
+    // 想让她"主动找你说话"再打开，开启后不再走 expression 出口。
+    conversation: {
+      enabled: false,
+      session_id: '',
+      prompt: '',
+      max_per_day: 3,
+      min_gap_min: 120,
+      dry_run: false,
+    },
   },
   think: {
     // 碎碎念默认开：它不占正式回复，只是一句很短的自言自语
@@ -426,6 +443,13 @@ function normalizeConfig(config: DaughterConfig): DaughterConfig {
     400,
     Math.max(40, Math.round(num(config.retrieval.fulltext_excerpt_chars, 120))),
   );
+  // 遗忘曲线：稳定度按天，太小等于秒忘，太大会让"忘"这件事失去意义
+  const forgetting = config.retrieval.forgetting;
+  forgetting.enabled = forgetting.enabled !== false;
+  forgetting.base_stability_days = clampRange(forgetting.base_stability_days, 1, 3650, 120);
+  forgetting.arousal_gain = clampRange(forgetting.arousal_gain, 0, 5, 0.9);
+  forgetting.pleasure_gain = clampRange(forgetting.pleasure_gain, 0, 5, 0.4);
+  forgetting.weight_gain = clampRange(forgetting.weight_gain, 0, 5, 0.8);
   config.skills.min_steps_to_learn = Math.min(8, Math.max(2, Math.round(num(config.skills.min_steps_to_learn, 2))));
 
   const shadow = config.skills.shadow ?? { ...defaultConfig.skills.shadow };
@@ -528,6 +552,17 @@ function normalizeConfig(config: DaughterConfig): DaughterConfig {
   const quietStart = Math.min(23, Math.max(0, Math.round(num(quietRaw[0], 0))));
   const quietEnd = Math.min(24, Math.max(0, Math.round(num(quietRaw[1], 7))));
   speak.quiet_hours = [quietStart, quietEnd];
+
+  if (!speak.conversation || typeof speak.conversation !== 'object') {
+    speak.conversation = structuredClone(defaultConfig.speak.conversation);
+  }
+  const conversation = speak.conversation;
+  conversation.enabled = conversation.enabled === true;
+  conversation.session_id = typeof conversation.session_id === 'string' ? conversation.session_id.trim() : '';
+  conversation.prompt = typeof conversation.prompt === 'string' ? conversation.prompt.trim() : '';
+  conversation.max_per_day = Math.min(24, Math.max(0, Math.round(num(conversation.max_per_day, 3))));
+  conversation.min_gap_min = clampRange(conversation.min_gap_min, 5, 1440, 120);
+  conversation.dry_run = conversation.dry_run === true;
 
   if (!config.think || typeof config.think !== 'object') {
     config.think = structuredClone(defaultConfig.think);

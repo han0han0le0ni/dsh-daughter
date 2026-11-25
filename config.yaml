@@ -13,6 +13,15 @@ random_surprise_enabled: true
 retrieval:
   top_k: 5
   half_life_days: 7
+  # 艾宾浩斯遗忘曲线：保留率 = e^(-间隔/稳定度)。
+  # 稳定度越大忘得越慢；情绪唤醒、情绪强度与重要度会把稳定度拉长，
+  # 所以激动或难受时记下的事留得久，平淡日常退得快。
+  forgetting:
+    enabled: true
+    base_stability_days: 120
+    arousal_gain: 0.9
+    pleasure_gain: 0.4
+    weight_gain: 0.8
   surprise_eta: 0.05
   exclude_archived: true
   max_candidates: 1000
@@ -203,6 +212,16 @@ speak:
   jitter: 0.04               # 抖动幅度，避免像定时任务
   shadow: false              # 影子模式：照常评估只记统计，不投递也不写冷却/计数
   stats: true                # 按日记录 act/hold/silent 计数，面板看沉默占比
+  # 会话窗口投递：把"她想说的话"变成当前会话里的一条插件消息，
+  # 由模型回一条真正的回复显示在对话里；开启后不再发桌宠/HTTP 出口。
+  # 限额与间隔独立于上面的冷却：会话消息会消耗一次模型调用，宁少勿多。
+  conversation:
+    enabled: false           # 默认关，确认想让她主动找你说话再打开
+    session_id: ''           # 留空 = 最近一次有用户输入的会话
+    prompt: ''               # 留空用内置开口框架；填了会替换其中的指令句
+    max_per_day: 3           # 一天最多送进会话几次
+    min_gap_min: 120         # 两次之间至少隔多久
+    dry_run: false           # 干跑：只写日志，不记配额也不入队
 
 # 外部连接器（DEF-03）：核心只认来源白名单与协议版本，适配器本体在 connectors/ 下。
 # 每个适配器可放 connectors/<source>/connector.json：

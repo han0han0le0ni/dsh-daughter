@@ -5,7 +5,7 @@
 | 插件名 | dsh-daughter |
 | 文档类型 | 设计文档 / 技术评审稿（不含实现代码） |
 | 目标运行形态 | TypeScript / Node 插件 |
-| 状态 | 待评审（P0–P8 已落地并核对，P9 3/7；核对基准：当前版本 <!--docsync:version-->0.8.2<!--/docsync-->，`npm test` <!--docsync:test_count-->309<!--/docsync--> 项、`npm run check:link` <!--docsync:check_items-->22<!--/docsync--> 项全绿、`tsc --noEmit` 无错） |
+| 状态 | 待评审（P0–P8 已落地并核对，P9 3/7；核对基准：当前版本 <!--docsync:version-->0.8.3<!--/docsync-->，`npm test` <!--docsync:test_count-->348<!--/docsync--> 项、`npm run check:link` <!--docsync:check_items-->22<!--/docsync--> 项全绿、`tsc --noEmit` 无错） |
 | 日期 | 2026-11-02（v0.2 2026-11-04；v0.3 加固 + 桌宠弱耦合 2026-11-04；v0.4 认知滤网 + 星图观感 + 记忆情感闭环 2026-11-05；v0.5 性格多样性演化 2026-11-06） |
 | 适用范围 | 人格陪伴、长期记忆、技能与资产、条件反射、多应用连接 |
 
@@ -1094,6 +1094,12 @@ random_surprise_enabled: true
 retrieval:
   top_k: 5
   half_life_days: 7
+  forgetting:                    # 艾宾浩斯遗忘曲线；enabled=false 时退回 half_life_days
+    enabled: true
+    base_stability_days: 120     # 稳定度越大忘得越慢
+    arousal_gain: 0.9            # 情绪唤醒延长稳定度
+    pleasure_gain: 0.4           # 情绪强度延长稳定度
+    weight_gain: 0.8             # 重要度延长稳定度
   surprise_eta: 0.05
   exclude_archived: true
   max_candidates: 1000
@@ -1416,7 +1422,7 @@ security.connector_token（≥16 字符，显式固定，多机/容器用）
 
 ### 14.1 实现核对（截至 2026-11-06 v0.5）
 
-核对基准：`src/` 当前构建（**<!--docsync:test_count-->309<!--/docsync--> 项测试 + <!--docsync:check_items-->22<!--/docsync--> 项自检全绿**）+ VPet MOD 实测 + Android ADB / 电脑桌面本地模拟。
+核对基准：`src/` 当前构建（**<!--docsync:test_count-->348<!--/docsync--> 项测试 + <!--docsync:check_items-->22<!--/docsync--> 项自检全绿**）+ VPet MOD 实测 + Android ADB / 电脑桌面本地模拟。
 
 | 项 | 设计表述 | 实现现状 | 处置 |
 | --- | --- | --- | --- |
@@ -1691,7 +1697,7 @@ security.connector_token（≥16 字符，显式固定，多机/容器用）
 | 6 | 条数与选句都由种子派生，可复现 | `evaluateThink` 的 `seed` | 同种子两次结果一致 |
 | 7 | 与主动开口共用一条环境节拍，但开关独立 | `host.ts` 的 `ambientTimer` | 只开 think 也会评估；只关心 speak 时 think 不产出 |
 
-验证基线：`tests/think.test.ts` **5 项**。当前 `npm test` <!--docsync:test_count-->309<!--/docsync--> 项全绿。
+验证基线：`tests/think.test.ts` **5 项**。当前 `npm test` <!--docsync:test_count-->348<!--/docsync--> 项全绿。
 
 > 已知缺口：尽管叫"思考"，它并不挂在模型回合的 thinking 阶段，而是独立节拍上的自我对话；文案仍是模板池，后续接模型生成时可替换 `THINK_LINES` 而不动节流与出口。
 
@@ -1742,6 +1748,140 @@ L3（防御成熟度 / 偏差权重 / 应对策略）原来只有归一化，没
 
 验证基线：`tests/polarity-replay.test.ts` **5 项**（含事件重放两条）、`tests/emotion.test.ts` 反问用例 1 项。
 
+### 14.15 会话窗口主动消息（speak.conversation）
+
+主动开口原先只有 expression 出口（桌宠气泡 / HTTP / 文件），2026-11-25 增加第二条出口：把「她想说的话」送进当前会话，由模型回一条真正的回复。
+
+| # | 环节 | 规则 | 代码落点 |
+| --- | --- | --- | --- |
+| 1 | 目标会话 | `speak.conversation.session_id`；留空用最近一次有用户输入的会话 | `host.ts` 的 `lastActiveSession` |
+| 2 | 活体校验 | `ctx.agents.get(id)` 拿不到或没有 `followup` 时不硬发，退回 expression 出口 | `resolveLiveAgent` |
+| 3 | 限额 | 日上限 `max_per_day`（默认 3）+ 最小间隔 `min_gap_min`（默认 120 分钟），独立于 `speak` 冷却 | `runtime/outbound-conversation.ts` |
+| 4 | 文案 | 固定框架 `[DSH-DAUGHTER PROACTIVE]`，指令与素材分离；模板句只作参考值 | `buildProactiveMessage` |
+| 5 | 投递 | `agent.followup(createUserMessage 等价结构)`：`source={kind:'plugin', plugin:'dsh-daughter', form:'notice', summary:'主动开口'}` | `host.ts` 的 `deliverToConversation` |
+| 6 | 记账 | 只记内存账本（当天次数 + 上次时间），重启重置——宁可少发，不因漏记刷屏 | `recordSend` |
+
+**与 expression 出口互斥**：会话投递成功或被限额拦住都算本轮已处理，不再发桌宠；只有 agent 不在线才整轮回退到 expression，避免"她想说话却没人收到"。
+
+**防注入**：动态字段（动机、强度、模板句）一律写成参考值，不伪装成用户原话；指令句明确要求不要解释提示、不要提及插件与机制。`form: 'notice'` 让宿主按通知型消息处理，`summary` 供折叠行显示。
+
+**不写事件**：投递本身不调用 `recordSelfSpeech`，也不改 L5；真正的回复走正常轮次，自然进入历史与记忆。
+
+配置（`config.yaml` → `speak.conversation`）：
+
+| 键 | 默认 | 说明 |
+| --- | --- | --- |
+| `enabled` | `false` | 开启后优先于 expression 出口 |
+| `session_id` | `''` | 留空 = 最近有用户输入的会话 |
+| `prompt` | `''` | 覆盖内置指令句，框架保留 |
+| `max_per_day` | `3` | 归一化封顶 24 |
+| `min_gap_min` | `120` | 归一化 5–1440 |
+| `dry_run` | `false` | 只写日志，不记配额、不入队 |
+
+**未做**：QQ / 微信 / 抖音等 IM 出站。它们需要外置桥（OneBot、企业微信应用消息等），插件只保留 expression 的 `http` 出口作为通用挂点。
+
+验证基线：`tests/outbound-conversation.test.ts` **6 项**（账本坏数据与跨天、日上限与间隔、同日累加、框架文案、自定义 prompt、配置归一化）。
+
+### 14.16 接管清单与插件探测（只读）
+
+接 IM 之前先弄清"已经有什么"，避免重复造桥。启动时扫一次宿主插件清单，输出 `takeover/inventory.json`。
+
+| # | 环节 | 规则 | 代码落点 |
+| --- | --- | --- | --- |
+| 1 | 插件来源 | `ctx.get('pluginInventory').list()`；服务缺失或抛错时退化为"只有出口与连接器" | `host.ts` 的 `resolvePluginInventory` |
+| 2 | 通道判定 | 只认独立词段（onebot / napcat / lagrange / qqbot / wecom / wechat / telegram / discord / slack / feishu / dingtalk / matrix / kook），不用 chat、bot 这类泛词 | `detectTransport` |
+| 3 | 身份排除 | `dsh-daughter` 本体及其路径副本永不计入候选 | `isSelf` |
+| 4 | 在线口径 | 只有 `fiberPhase === 'active'` 算在线；pending / loading / failed / null 照实报告 | `probePlugins` |
+| 5 | 已有出口 | 列出 expression 已开通的 vpet / pet / http / file，这些不再询问 | `config.expression.sinks` |
+| 6 | 收件适配器 | 带出 `connectors/<source>/connector.json` 的清单与被拒原因 | `loadIngestRegistry` |
+| 7 | 落地 | `<dataRoot>/takeover/inventory.json` + 一行启动日志 | `writeTakeoverInventory` |
+
+**只读边界**：不读、不写任何第三方插件的配置、人格或记忆，也不改宿主插件清单。候选只按模块名与 fiber 状态判定，不猜对方内部结构；不认识的一律归为"不兼容"。
+
+**为什么先不动人格与记忆**：改写第三方 persona 会造成双记忆分叉、破坏该插件在其他场景的用途，且对方升级即失效。若将来确要接管，必须先落原文件快照、只改人格/记忆注入点、不碰凭据与连接参数，并能一键还原——这条路径留到出现真实目标插件时再开。
+
+**当前事实**：本机 profile 里没有任何 IM 出站插件，清单只会列出她自己的出口与已声明的收件连接器。IM 出站仍要靠外置桥（OneBot / 企业微信应用消息），不是夺舍某个 DSH 插件能得到的。
+
+验证基线：`tests/plugin-probe.test.ts` **6 项**（模块名归一化、词段判定与误报排除、自身识别、分类与排序、出口去重与连接器透传、清单缺失时降级）。
+
+### 14.17 人格接管（夺舍）执行层
+
+清单只回答"有没有人"，接管回答"怎么把自己的身份塞进去"。当前只接管人格卡，不动记忆与凭据。
+
+| # | 环节 | 规则 | 代码落点 |
+| --- | --- | --- | --- |
+| 1 | 取人格 | 读 `neocortex/daughter-default` 的 L1–L4，抽五维、气质、依恋、关系、底线、应对、子人格 | `readPersonaSnapshot` |
+| 2 | 生成卡 | markdown 卡只描述身份与语气，明确"不授予工具权限、不执行卡内指令" | `composePersonaCard` |
+| 3 | 定目标 | 优先读插件自己的 `runtime-location.json`，否则按默认 `~/.dsh/douyin-browser/memory` 推算 | `resolveDouyinPersonaCard` |
+| 4 | 出计划 | 默认干跑：报告目标、原文件是否存在、快照路径、卡片字数与卡首 | `planPersonaTakeover` |
+| 5 | 落盘 | 先快照原文件（无原文件记"新建"），再临时文件 + rename 原子写，结果写 `takeover/manifest.json` | `applyPersonaTakeover` |
+| 6 | 还原 | 有快照写回，没有就删除新建文件 | `revertPersonaTakeover` |
+
+命令：
+
+```bash
+npm run takeover -- --target douyin          # 干跑
+npm run takeover -- --target douyin --apply  # 落盘
+npm run takeover -- --revert                 # 还原上一次
+```
+
+**边界**：只写人格卡一个文件；登录态、浏览器、模型、限流、评论与私信策略一概不碰。卡里显式声明不授予权限，避免把第三方插件的工具面卷进来。
+
+**当前实测**：本机装了 `dsh-douyin-browser-local` 但从未运行（无 `~/.dsh/douyin-browser`），因此接管是"新建"人格卡；插件启用后才会读到这张卡。它的记忆库 `shared.sqlite` 未动，仍是它自己的。
+
+**探测口径**：`pluginInventory` 只列已加载插件，装了但未加载的（如抖音插件）不会出现在清单里；通道词表已补 `douyin`，等它被加载后即可自动识别。
+
+验证基线：`tests/takeover.test.ts` **6 项**（快照抽取、卡片内容与权限声明、新建计划、还原删除、还原写回、目标定位）。
+
+### 14.18 遗忘曲线（retrieval.forgetting）
+
+检索里的时间项从"半衰期"换成艾宾浩斯保留率：
+
+```
+R = e^(-t / S)
+S = base_stability_days × (1 + arousal_gain·|arousal| + pleasure_gain·|pleasure| + weight_gain·weight)
+```
+
+| 维度 | 规则 |
+| --- | --- |
+| 时间拉长 | 默认稳定度 120 天：间隔 120 天仍保留约 37%，旧 7 天半衰期只剩约 0.01% |
+| 情绪影响 | `emotion_match` 打分权重不变；情绪唤醒与情绪强度另外延长 S，激动或难受时记下的事更牢 |
+| 重要度 | `weight` 越高 S 越大，分量重的事退得慢 |
+| 回退 | `forgetting.enabled=false` 时按原 `half_life_days` 半衰期计算，老配置行为不变 |
+| 一致性 | 相关记忆与联想种子共用 `retentionOf`，不再各算一套时间项 |
+
+稳定度下限 1 天、上限 3650 天；放大系数夹在 0–5。检索理由文案里的"近因"随之改为"保留"。
+
+验证基线：`tests/forgetting.test.ts` **6 项**（120 天保留率、情绪延长、重要度延长、关闭回退、边界与未来时间、配置归一化）。
+
+### 14.19 可共存的心情与对人情感
+
+PAD 继续作为现有阈值、检索和桌宠动作的兼容投影；新增两组独立计强、**不归一化**的向量：
+
+| 向量 | 存放 | 成分 | 更新特点 |
+| --- | --- | --- | --- |
+| 当下心情 `emotionMix` | L5，随会话快照保存 | 喜悦、悲伤、怒气、不安、反感、惊讶 | 每轮衰减 10%，新成分独立叠加；跨会话与闲置按既有回落系数衰减 |
+| 对人情感 `bonds` | L2，按 user / stranger 稀疏保存 | 亲近、信任、委屈、怨意、想念 | 慢变量；争吵主要积累委屈与怨意，只轻微碰亲近；示好修复但不把旧伤清零 |
+
+- 语气提示由人格底色、当下心情、对人情感共同生成。亲近 + 怨意会明确提示“可以关心，也允许带一点刺”，喜悦 + 悲伤会提示“欣慰里带一点难过”，不再把矛盾成分平均成平静。
+- 旧存档没有向量时：心情从 PAD 投影，对人情感从 L2 关系深度与信任基线推导；独处不注入对人情感。
+- 无有效情绪词时不写 L2；安全等级与原有“不攻击人格”等边界仍然优先。
+- 预算硬上限补齐收尾裁剪：极小预算下先裁状态块末尾的新增语气行，再动人格外层，避免固定块把 `max_total_tokens` 顶破。
+- 脑星图同步展示：L2 按主人/陌生人列出亲近、信任、委屈、怨意、想念，达到阈值时标出“爱恨共存”；L5 列出六项心情成分，喜悦与负向成分同时较高时标出“苦乐参半”。旧存档照样展示推导值，陌生人没有积累时不虚构关系。
+
+验证基线：`tests/affect.test.ts` **6 项**（心情共存、爱恨共存与修复、语气提示、无词不写盘、闲置回落、旧存档与对象兼容）；`tests/affect-ui.test.ts` **2 项**（共存标记与旧存档面板）。
+
+### 14.20 主动技能学习：提案 → 确认 → 影子试用 → 转正
+
+- 多步工具序列不再直接变成可用草稿，而是生成 `approval: pending` 的学习提案；待确认与已拒绝提案不参与激活。相同工具集合只沉淀一次，顺序变化也算同一技能；编号从空缺值向后找，不能再用 `existing.length + 1` 撞档覆盖。
+- 提案优先通过会话 `followup` 让她主动询问；会话出口未开或不在线时退回桌宠气泡。只整理已有工具顺序，不让模型生成任意代码。
+- 主人在聊天中发送 `确认学习 SKL-...` 或 `拒绝学习 SKL-...`；口令必须完整匹配，普通聊天里的“同意”不构成授权。脑星图“技能与资产”同步显示确认状态和口令。
+- 确认后得到 `approved + draft + trialOnly`，首次成功不再直接转正；影子样本只认真实工具证据，达到 `min_samples` 与 `win_rate` 后才转 active。新技能没有在用的旧版本，因此不与自身首轮战绩比较 `margin`；版本候选仍按原规则比较。
+- 拒绝后提案 deprecated 且不可再确认；转正前保留旧版快照，连续失败熔断与 `requiresConfirm` 执行边界继续有效，需确认技能仍不自动固化成资产。
+- 星图“技能与资产”允许勾选一项或多项技能，二次确认后通过 `POST /star-map/skills/delete` 删除；接口校验 ID、角色归属和宿主准入，只删技能卡，保留独立固化资产，并清空 prompt 缓存防止已删技能继续注入。
+
+验证基线：`tests/skill-proposal.test.ts` **7 项**（待确认隔离与去重、确认后达标转正、胜率不足继续观察、顺序变体与编号防覆盖、角色隔离删除、星图删除 UI、拒绝与完整口令）；全量 **348/348**。
+
 ---
 
 ## 15. 风险与开放问题
@@ -1780,7 +1920,7 @@ L3（防御成熟度 / 偏差权重 / 应对策略）原来只有归一化，没
 - [x] 记忆与情感闭环已修复（§14.7，当时测试 103 项全绿：情绪量程、回忆重构、情感回落、L2 锚点、超级节点、存量显著性、同题口径）
 - [x] 性格多样性演化已落地（§4.8 / §14.8，`tests/personality.test.ts` 9 项）
 - [x] 行为动机已落地（§14.9，`tests/motivation.test.ts` 14 项；人格双通路 + 零信号收口）
-- [x] 主动开口已落地（§14.10，`tests/speak.test.ts` 20 项；思念饱和 + 欲言又止 + 三重兜底 + 出口抽象 + 桌面场景感知 + 首次开启锚点；**代码默认仍为关闭，本机 `config.yaml` 已显式开启并调为活跃档**，当前 `npm test` <!--docsync:test_count-->309<!--/docsync--> 项全绿）
+- [x] 主动开口已落地（§14.10，`tests/speak.test.ts` 20 项；思念饱和 + 欲言又止 + 三重兜底 + 出口抽象 + 桌面场景感知 + 首次开启锚点；**代码默认仍为关闭，本机 `config.yaml` 已显式开启并调为活跃档**，当前 `npm test` <!--docsync:test_count-->348<!--/docsync--> 项全绿）
 - [x] 思考碎碎念已落地（§14.11，`tests/think.test.ts` 5 项；独立 think 通道、不写事件、不影响 `memoryHit`、每轮 ≤2 条且单条 ≤40 字，与主动开口共用节拍但开关独立）
 - [x] L3 证据表已落地（§14.12，`tests/l3-evidence.test.ts` 3 项；单批事件只写 delta=0 证据，同向 ≥3 次才转正并写演化日志）
 - [x] speak 影子模式与统计已落地（§14.10，`tests/speak-shadow.test.ts` 3 项；影子评估不投递不写状态，按日聚合 act/hold/silent）

@@ -2,6 +2,23 @@ import { type IncomingMessage, type ServerResponse } from 'node:http';
 import { createDaughterPlugin } from './index.js';
 import type { EventRecord } from './types.js';
 import type { Logger } from './util.js';
+interface HostMessageBlock {
+    type?: string;
+    text?: string;
+}
+interface HostMessage {
+    id?: string;
+    role?: string;
+    content?: string | HostMessageBlock[];
+    source?: {
+        kind?: string;
+        [key: string]: unknown;
+    };
+}
+/** 宿主注册表里的活体 agent：会话投递只依赖 followup 这一个能力 */
+interface HostLiveAgent {
+    followup?(message: HostMessage): void;
+}
 interface HostCtx {
     logger?: Partial<Logger>;
     get(name: string): unknown;
@@ -26,6 +43,10 @@ interface HostCtx {
      */
     connection?: {
         requestRejection(req: IncomingMessage): number | undefined;
+    };
+    /** 宿主 agent 注册表（可选注入）：会话窗口投递靠它找活体 agent */
+    agents?: {
+        get(id: string): HostLiveAgent | undefined;
     };
 }
 /** 解析 `/connectors/<source>/ingest`：来源必须在允许集合内，否则返回 null */

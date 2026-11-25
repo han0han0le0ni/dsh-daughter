@@ -186,7 +186,7 @@ export function activateSkills(skills, userText, config, ctx = {}) {
 function activateBySimilarity(skills, userText, config) {
     const scored = skills
         // draft 也参与激活（§9.1「可执行，需确认」），deprecated 永不激活
-        .filter((skill) => skill.status === 'active' || skill.status === 'frozen' || skill.status === 'draft')
+        .filter((skill) => (skill.status === 'active' || skill.status === 'frozen' || skill.status === 'draft') && skill.approval !== 'pending' && skill.approval !== 'rejected')
         .map((skill) => {
         const keywordHits = skill.keywords.filter((keyword) => keyword && userText.includes(keyword)).length;
         const similarity = diceSimilarity(userText, `${skill.name} ${skill.intent} ${skill.keywords.join(' ')}`);
@@ -494,6 +494,24 @@ export function clipBlocks(blocks, maxTotal) {
     // 高优先级块（跨窗口 / 进行中的局）平时不裁，但连它们一起都放不下时，
     // 作为最后手段从低到高裁：先跨窗口、再进行中的局——保住绝对预算，也保住优先级。
     for (const kind of ['cross_window', 'thread']) {
+        while (total > maxTotal) {
+            const block = current.find((item) => item.kind === kind);
+            if (!block)
+                break;
+            const lines = block.text.split('\n');
+            if (lines.length <= 1) {
+                current = current.filter((item) => item.kind !== kind);
+            }
+            else {
+                block.text = lines.slice(0, -1).join('\n');
+                block.tokens = estimateTokens(block.text);
+            }
+            total = sumTokens(current);
+        }
+    }
+    // 状态与人格通常受各自块上限保护；但新增的语气/情感行可能让固定块在极小总预算下仍然超限。
+    // 最后按优先级从低到高逐行裁：先裁状态块末尾的补充提示，再动人格外层，保证 maxTotal 是真硬上限。
+    for (const kind of ['state_hint', 'persona']) {
         while (total > maxTotal) {
             const block = current.find((item) => item.kind === kind);
             if (!block)

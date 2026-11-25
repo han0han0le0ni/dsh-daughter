@@ -91,6 +91,10 @@
   .group-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px; }
   .group-head b { font-size: 12px; font-weight: 600; color: #dbe6fa; letter-spacing: .02em; }
   .group-head span { font-size: 10.5px; color: #5f6c85; }
+  .skill-delete { margin-left: auto; padding: 3px 7px; font-size: 10px; color: #d98c7c; }
+  .skill-delete:disabled { opacity: .38; cursor: default; }
+  .skill-pick { display: flex; align-items: center; gap: 5px; margin: 1px 0 4px; font-size: 10px; color: #71809c; cursor: pointer; }
+  .skill-pick input { margin: 0; accent-color: var(--accent); }
 
   .param { padding: 4px 0 5px; border-top: 1px dashed rgba(122, 152, 200, .10); }
   .param:first-of-type { border-top: 0; padding-top: 0; }
@@ -547,6 +551,8 @@ function escapeHtml(value) {
 
 /* ------------------------------ 参数信息栏 ------------------------------ */
 
+const selectedSkillIds = new Set();
+
 function deltaNode(delta) {
   if (typeof delta !== 'number') return '';
   const rounded = Math.round(delta * 1000) / 1000;
@@ -562,7 +568,7 @@ function barPercent(value, base) {
   return Math.max(0, Math.min(1, norm)) * 100;
 }
 
-function renderParam(param) {
+function renderParam(param, skillId = null) {
   const isNumber = param.kind === 'number' && typeof param.value === 'number';
   const hasBar = isNumber && typeof param.base === 'number' && Math.abs(param.value) <= 1.5 && Math.abs(param.base) <= 1.5;
   let valueHtml;
@@ -586,7 +592,11 @@ function renderParam(param) {
       '<i class="cur" style="width:' + barPercent(param.value, param.base) + '%"></i></div>'
     : '';
   const note = param.note ? '<div class="note">' + escapeHtml(param.note) + '</div>' : '';
-  return '<div class="param"><div class="param-top"><span class="k" title="' + escapeHtml(param.key) + '">' +
+  const picker = skillId
+    ? '<label class="skill-pick"><input type="checkbox" data-skill-id="' + escapeHtml(skillId) + '"' +
+      (selectedSkillIds.has(skillId) ? ' checked' : '') + '>选择这项技能</label>'
+    : '';
+  return '<div class="param">' + picker + '<div class="param-top"><span class="k" title="' + escapeHtml(param.key) + '">' +
     escapeHtml(param.label) + '</span>' + valueHtml + deltaNode(param.delta) + '</div>' + bar + note + '</div>';
 }
 
@@ -595,8 +605,59 @@ function renderGroup(group) {
     return '<div class="group"><div class="group-head"><b>' + escapeHtml(group.title) + '</b><span>' +
       escapeHtml(group.subtitle) + '</span></div><div class="param"><span class="k" style="color:#55617a">暂无数据</span></div></div>';
   }
+  // 每个技能都有 approval 行，用它反推成熟度主行；ID 里有点号也能正确配对
+  const skillRows = new Set(group.params
+    .filter((param) => param.key.startsWith('skill.') && param.key.endsWith('.approval'))
+    .map((param) => param.key.slice(0, -'.approval'.length)));
+  const manage = group.id === 'program' && skillRows.size > 0
+    ? '<button class="skill-delete" id="delete-skills" disabled>删除选中技能</button>'
+    : '';
+  const rows = group.params.map((param) => {
+    const skillId = skillRows.has(param.key) ? param.key.slice('skill.'.length) : null;
+    return renderParam(param, skillId);
+  }).join('');
   return '<div class="group"><div class="group-head"><b>' + escapeHtml(group.title) + '</b><span>' +
-    escapeHtml(group.subtitle) + '</span></div>' + group.params.map(renderParam).join('') + '</div>';
+    escapeHtml(group.subtitle) + '</span>' + manage + '</div>' + rows + '</div>';
+}
+
+function wireSkillDeletion(body) {
+  const button = document.getElementById('delete-skills');
+  if (!button) return;
+  const update = () => {
+    button.textContent = selectedSkillIds.size > 0 ? `删除选中技能 (${selectedSkillIds.size})` : '删除选中技能';
+    button.disabled = selectedSkillIds.size === 0;
+  };
+  body.querySelectorAll('input[data-skill-id]').forEach((input) => {
+    input.addEventListener('change', () => {
+      if (input.checked) selectedSkillIds.add(input.dataset.skillId);
+      else selectedSkillIds.delete(input.dataset.skillId);
+      update();
+    });
+  });
+  button.addEventListener('click', async () => {
+    const ids = [...selectedSkillIds];
+    if (ids.length === 0) return;
+    if (!window.confirm(`确定删除选中的 ${ids.length} 项技能吗？此操作不可撤销；已经固化的资产会保留。`)) return;
+    button.disabled = true;
+    button.textContent = '正在删除…';
+    try {
+      const path = location.pathname.replace(/\/+$/, '') + '/skills/delete';
+      const response = await fetch(path, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ ids }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? `HTTP ${response.status}`);
+      selectedSkillIds.clear();
+      if (result.missing?.length) window.alert(`已删除 ${result.deleted.length} 项；另有 ${result.missing.length} 项不存在或未删除。`);
+      location.reload();
+    } catch (error) {
+      window.alert('删除失败：' + error.message);
+      update();
+    }
+  });
+  update();
 }
 
 /** 会话走势：单张快照看不出「在变好还是变坏」，这里把每个会话的末态连成线 */
@@ -690,6 +751,7 @@ function renderSide(panels, metrics) {
     '<div class="sec-title">最近演化 <small>L1–L4</small></div>' +
     renderEvolution(panels.evolution) +
     (metrics ? '<div class="sec-title">指标</div>' + renderMetrics(metrics) : '');
+  wireSkillDeletion(body);
 }
 
 /* ------------------------------- 3D 星图 ------------------------------- */

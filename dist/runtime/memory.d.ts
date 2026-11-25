@@ -13,6 +13,15 @@ export interface RetrieveArgs {
     /** 可选 FTS5 字面检索（D-02）：query → eventId → 0..1 的匹配分；缺省时只用 Dice */
     ftsScores?: (query: string) => Map<string, number>;
 }
+/**
+ * 艾宾浩斯保留率：R = e^(-间隔天数 / 稳定度)。
+ *
+ * 稳定度不是常数：情绪唤醒、情绪强度与记忆权重都会把它拉长——
+ * 激动或难受时记下的事、以及本来分量就重的事，忘得更慢；平淡的日常退得更快。
+ * 这样"时间拉长"与"仍受情绪影响"同时成立，而不是简单把衰减调慢。
+ * `forgetting.enabled` 关掉时退回旧的半衰期曲线，老配置行为不变。
+ */
+export declare function retentionOf(event: EventRecord, now: string, config: DaughterConfig): number;
 export declare function retrieveEvents(args: RetrieveArgs): RetrievalHit[];
 /**
  * 一条字面命中都没有时，从记忆网里挑一个种子往外摸（`fallback_when_no_match`）。

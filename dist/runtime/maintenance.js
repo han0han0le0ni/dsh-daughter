@@ -1,6 +1,7 @@
 import { buildStarPanels } from './panels.js';
 import { clamp01, daysBetween, truncate } from '../util.js';
 import { forgetSweep } from './filter.js';
+import { mixFromPad, relaxEmotionMix } from './affect.js';
 import { defaultConfig } from '../config.js';
 import { PREFERENCE_ANCHORS, STAGE_ANCHORS, bucketIndex, distribute, primary, } from './weights.js';
 /**
@@ -164,6 +165,7 @@ export function relaxL5(store, config, now) {
                 dominance: pull(l5.emotion.dominance, baseline.dominance),
             },
             stress: pull(l5.stress, relax.stress_baseline),
+            emotionMix: relaxEmotionMix(l5.emotionMix ?? mixFromPad(l5.emotion), mixFromPad(baseline), ratio),
             fatigue: pull(l5.fatigue, relax.fatigue_baseline),
             safety: pull(l5.safety, relax.safety_baseline),
             snapshotAt: now,
@@ -528,7 +530,8 @@ export function observeShadow(store, skill, toolsUsed, config, now) {
     const shadowWinRate = shadowSuccess / samples;
     const shouldPromote = samples >= settings.min_samples &&
         shadowWinRate >= settings.win_rate &&
-        shadowWinRate >= primaryWinRate + settings.margin;
+        // 新技能试用没有在用的旧版本，不与自己的首轮战绩比 margin；版本候选仍必须优于旧版
+        (skill.trialOnly === true || shadowWinRate >= primaryWinRate + settings.margin);
     const apply = (current) => {
         const shadow = current.shadow;
         if (!shouldPromote) {
@@ -549,6 +552,7 @@ export function observeShadow(store, skill, toolsUsed, config, now) {
             failStreak: 0,
             breakerUntil: undefined,
             status: 'active',
+            trialOnly: undefined,
             shadow: undefined,
             previous: snapshotOf(current, now),
             updatedAt: now,
@@ -603,7 +607,7 @@ export function bumpSkill(store, skill, success, config, now) {
         const failCount = current.failCount + (success ? 0 : 1);
         const failStreak = success ? 0 : (current.failStreak ?? 0) + 1;
         let status = current.status;
-        if (status === 'draft' && success)
+        if (status === 'draft' && success && !current.trialOnly)
             status = 'active';
         else if (status === 'active' && failCount >= DEPRECATE_AFTER_FAILS)
             status = 'deprecated';
@@ -648,9 +652,13 @@ function breakerDeadline(now, failStreak, config) {
         return now;
     return new Date(baseMs + minutes * 60_000).toISOString();
 }
+/** 同一组工具只保留一份技能：顺序变化视为同一流程的另一种执行次序，不再另开新卡 */
+function canonicalToolSet(tools) {
+    return [...new Set(tools.map((tool) => tool?.trim()).filter((tool) => Boolean(tool)))].sort().join('>');
+}
 /**
  * 从一次成功的工具序列里沉淀技能草稿（§9.1「draft：新学技能」）。
- * 纯启发式：只看工具序列，不调用模型；同样的工具序列只沉淀一次。
+ * 纯启发式：只看工具序列，不调用模型；相同工具集合只沉淀一次，包括顺序变体。
  */
 export function learnDraftSkill(store, config, input) {
     const tools = [...new Set(input.tools.map((tool) => tool.trim()).filter(Boolean))];
@@ -660,8 +668,11 @@ export function learnDraftSkill(store, config, input) {
     if (!intent)
         return null;
     const existing = store.loadSkills();
-    const signature = tools.join('>');
-    const duplicated = existing.some((skill) => skill.steps.map((step) => step.tool).filter(Boolean).join('>') === signature);
+    const signature = canonicalToolSet(tools);
+    const duplicated = existing.some((skill) => {
+        const toolsOfSkill = skill.requiredTools.length > 0 ? skill.requiredTools : skill.steps.map((step) => step.tool);
+        return canonicalToolSet(toolsOfSkill) === signature;
+    });
     if (duplicated)
         return null;
     const slug = tools
@@ -670,11 +681,17 @@ export function learnDraftSkill(store, config, input) {
         .join('-')
         .replace(/^-+|-+$/g, '')
         .slice(0, 32) || 'learned';
-    const serial = String(existing.length + 1).padStart(3, '0');
+    // 不能用 existing.length + 1：删掉中间卡后可能与现存编号相撞，覆盖另一张技能
+    let serialNumber = 1;
+    let skillId = '';
+    do {
+        skillId = `SKL-${slug}-${String(serialNumber).padStart(3, '0')}`;
+        serialNumber += 1;
+    } while (existing.some((item) => item.id === skillId));
     const skill = {
-        id: `SKL-${slug}-${serial}`,
+        id: skillId,
         characterId: store.characterId,
-        name: `刚学会的流程：${truncate(intent, 16)}`,
+        name: input.proposal ? `想学的流程：${truncate(intent, 16)}` : `刚学会的流程：${truncate(intent, 16)}`,
         intent,
         keywords: [...new Set(tools.flatMap((tool) => tool.split(/[_\-.]/)).filter((word) => word.length >= 2))].slice(0, 6),
         requiredTools: tools,
@@ -691,6 +708,7 @@ export function learnDraftSkill(store, config, input) {
         failStreak: 0,
         version: 1,
         status: 'draft',
+        approval: input.proposal ? 'pending' : undefined,
         updatedAt: input.now,
         schemaVersion: 1,
     };
@@ -706,6 +724,53 @@ export function learnDraftSkill(store, config, input) {
     };
     store.appendEvolution(entry);
     return { skill, evolutionId: entry.id };
+}
+/** 聊天里的显式确认口令：只接受完整命令，避免把普通聊天里的"同意"当成授权 */
+export function parseSkillProposalCommand(text) {
+    const match = text.trim().match(/^(确认|同意|批准|拒绝)(?:学习|技能)\s+(SKL-[a-z0-9-]+)$/i);
+    if (!match)
+        return null;
+    return { skillId: match[2], approve: match[1] !== '拒绝' };
+}
+/** 提案确认后才生成可执行草稿，并建立影子试用；拒绝则永久停用这一份提案 */
+export function reviewSkillProposal(store, skillId, approve, now) {
+    const before = store.loadSkill(skillId);
+    if (!before)
+        return { skill: null, changed: false };
+    if (before.approval !== 'pending')
+        return { skill: before, changed: false };
+    const skill = store.mutateSkill(skillId, (current) => {
+        if (current.approval !== 'pending')
+            return current;
+        if (!approve) {
+            return { ...current, approval: 'rejected', status: 'deprecated', trialOnly: undefined, shadow: undefined, updatedAt: now };
+        }
+        return {
+            ...current,
+            approval: 'approved',
+            status: 'draft',
+            trialOnly: true,
+            shadow: {
+                patch: { steps: current.steps.map((step) => ({ ...step })), requiredTools: [...current.requiredTools] },
+                success: 0,
+                fail: 0,
+                since: now,
+            },
+            updatedAt: now,
+        };
+    });
+    if (!skill || skill.approval === 'pending')
+        return { skill: skill ?? before, changed: false };
+    store.appendEvolution({
+        id: store.newEvolutionId(now),
+        characterId: store.characterId,
+        target: 'skill',
+        before: { skillId, approval: 'pending' },
+        after: { skillId, approval: skill.approval, status: skill.status },
+        reason: approve ? '主人确认技能提案，进入影子试用' : '主人拒绝技能提案，草稿停用',
+        at: now,
+    });
+    return { skill, changed: true };
 }
 const MOTION_TOOLS = new Set(['motion.play', 'motionPlay', 'motion_play']);
 /** 按技能形态决定固化后的资产类型，与设计文档 4.5 的四类资产对应 */

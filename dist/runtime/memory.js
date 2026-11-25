@@ -13,6 +13,27 @@ const TAG_LEXICON = [
 /** 单字弱命中分：只保证不被 `min_semantic` 挡掉，排序上仍低于二字以上的真实重合 */
 const SINGLE_CHAR_HIT = 0.3;
 /**
+ * 艾宾浩斯保留率：R = e^(-间隔天数 / 稳定度)。
+ *
+ * 稳定度不是常数：情绪唤醒、情绪强度与记忆权重都会把它拉长——
+ * 激动或难受时记下的事、以及本来分量就重的事，忘得更慢；平淡的日常退得更快。
+ * 这样"时间拉长"与"仍受情绪影响"同时成立，而不是简单把衰减调慢。
+ * `forgetting.enabled` 关掉时退回旧的半衰期曲线，老配置行为不变。
+ */
+export function retentionOf(event, now, config) {
+    const ageDays = Math.max(0, daysBetween(event.createdAt, now));
+    const forgetting = config.retrieval.forgetting;
+    if (!forgetting.enabled) {
+        return 0.5 ** (ageDays / Math.max(1, config.retrieval.half_life_days));
+    }
+    const emotion = event.emotionAtTime;
+    const arousal = Math.abs(emotion?.arousal ?? 0);
+    const pleasure = Math.abs(emotion?.pleasure ?? 0);
+    const stability = Math.max(1, forgetting.base_stability_days *
+        (1 + forgetting.arousal_gain * arousal + forgetting.pleasure_gain * pleasure + forgetting.weight_gain * clamp01(event.weight)));
+    return clamp01(Math.exp(-ageDays / stability));
+}
+/**
  * 单字查询（"累""饿"）在 bigram Dice 下恒为 0——两个字符才凑得出一个二元组。
  * 可这类一字问句恰恰是最常见的输入，正文里明明写着却检不到，等于把最该命中的场景漏掉。
  * 这里按"正文包含"补一个弱命中分，归一化口径与 Dice 一致（去空白与标点）。
@@ -35,7 +56,7 @@ export function retrieveEvents(args) {
         const dice = Math.max(diceSimilarity(query, event.title) * 1.0, diceSimilarity(query, event.summary) * 0.95, diceSimilarity(query, event.tags.join(' ')) * 0.6, singleCharHit(query, event));
         // FTS5 命中优先，Dice 作为短查询与索引不可用时的兜底
         const semantic = Math.max(dice, fts?.get(event.id) ?? 0);
-        const recency = 0.5 ** (daysBetween(event.createdAt, now) / Math.max(1, config.retrieval.half_life_days));
+        const recency = retentionOf(event, now, config);
         const emotionMatch = 1 - padDistance(currentEmotion, event.emotionAtTime);
         return {
             event,
@@ -84,7 +105,7 @@ export function retrieveEvents(args) {
         .map((item) => ({
         event: item.event,
         score: round(item.score),
-        reason: `语义 ${round(item.semantic)} / 近因 ${round(item.recency)} / 权重 ${round(item.weight)} / 情绪 ${round(item.emotionMatch)}`,
+        reason: `语义 ${round(item.semantic)} / 保留 ${round(item.recency)} / 权重 ${round(item.weight)} / 情绪 ${round(item.emotionMatch)}`,
     }));
 }
 /** 种子选择的权重：情绪像不像比近不近更贴近"共鸣"，近因只作次要参考 */
@@ -104,7 +125,7 @@ export function pickAssociationSeed(candidates, currentEmotion, now, config) {
         if (event.links.length === 0)
             continue;
         const emotionMatch = 1 - padDistance(currentEmotion, event.emotionAtTime);
-        const recency = 0.5 ** (daysBetween(event.createdAt, now) / Math.max(1, config.retrieval.half_life_days));
+        const recency = retentionOf(event, now, config);
         const score = SEED_EMOTION_WEIGHT * emotionMatch + SEED_RECENCY_WEIGHT * recency;
         if (!best || score > best.score)
             best = { event, score };

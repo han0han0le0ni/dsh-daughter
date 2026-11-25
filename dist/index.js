@@ -16,8 +16,9 @@ import { containsDiagnosisLabel, evaluateSafety } from './runtime/safety.js';
 import { logPolarity, prunePolarityLog } from './runtime/polarity-log.js';
 import { SURPRISE_REASON, applySurprise, associateEvents, extractEvent, linkNewEvent, pickAssociationSeed, recallDrift, reconstructOnRecall, retrieveEvents, } from './runtime/memory.js';
 import { NO_MATCH_CONSTRAINT, NO_MEMORY_CONSTRAINT, activateSkills, buildBlocks, buildCrossWindowDigest, buildEventDigest, buildPersonaText, buildThreadDigest, buildRelationText, buildSkillDigest, buildStateHint, clipBlocks, matchReflex, quotePriority, WORKING_STYLE, } from './runtime/content.js';
+import { bondForAudience, bondFromL2, buildAffectHint, updateBondEmotion } from './runtime/affect.js';
 import { applyPersonalitySignal } from './runtime/personality.js';
-import { applyPersonaDrift, buildPersonProfiles, buildStarMap, buildThingProfiles, bumpSkill, observeShadow, learnDraftSkill, maybeFreezeSkill, runTick, } from './runtime/maintenance.js';
+import { applyPersonaDrift, buildPersonProfiles, buildStarMap, buildThingProfiles, bumpSkill, observeShadow, learnDraftSkill, reviewSkillProposal, maybeFreezeSkill, runTick, } from './runtime/maintenance.js';
 /** §6.1 时延预算：超时只告警与记日志，不做硬中断（SQLite 同步查询无法中途取消） */
 const RETRIEVE_BUDGET_MS = 150;
 const BEFORE_PROMPT_BUDGET_MS = 100;
@@ -67,10 +68,10 @@ class Daughter {
         this.userTextCache.set(sessionKey(ctx), text);
         this.sourceCache.set(sessionKey(ctx), input.source);
         // 原始状态只由对话驱动；桌宠信号在 effective() 里叠加，存盘存原始值（§4.3）
+        const detail = analyzeSentiment(text);
         const l5 = updateL5(prev, text, now, persona);
         // A1 日志层：只记派生结果与命中词，不存原文；关闭时不留任何痕迹
         if (this.config.polarity_log?.enabled !== false) {
-            const detail = analyzeSentiment(text);
             logPolarity(this.dataRoot, {
                 at: now,
                 characterId: ctx.characterId,
@@ -101,6 +102,16 @@ class Daughter {
         l5.emotionalOverdraft = Math.min(1, Math.max(0, l5.emotionalOverdraft + overdraftDelta));
         store.saveOverdraft(l5.emotionalOverdraft);
         this.commitL5(store, ctx, l5);
+        // 对人的情感按对象慢速积累；没有有效情绪词时不写 L2，避免每轮无意义落盘
+        const bondKey = ctx.audience === 'alone' ? undefined : ctx.audience === 'to_stranger' ? 'stranger' : 'user';
+        if (bondKey) {
+            const previousBond = persona.l2.bonds?.[bondKey] ?? bondFromL2(persona.l2, now);
+            const nextBond = updateBondEmotion(previousBond, detail, now);
+            if (nextBond !== previousBond) {
+                persona.l2.bonds = { ...persona.l2.bonds, [bondKey]: nextBond };
+                store.savePersonaLayer('l2', persona.l2);
+            }
+        }
         this.logger.debug('on_user_message', {
             sessionId: ctx.sessionId,
             level: verdict.level,
@@ -316,7 +327,10 @@ class Daughter {
         const memoryHit = hasInjectedMemory;
         const { blocks, usedTokens } = buildBlocks({
             personaText: [buildPersonaText(persona, sub), relationText, WORKING_STYLE].filter(Boolean).join('\n'),
-            stateHint: buildStateHint(l5, verdict),
+            stateHint: [
+                buildStateHint(l5, verdict),
+                buildAffectHint(l5, bondForAudience(persona.l2, ctx.audience, now)),
+            ].filter(Boolean).join('\n'),
             eventDigest: buildEventDigest(injected, excerpts, now, ctx.sessionId, namer),
             crossWindowText: buildCrossWindowDigest(crossWindow, now, ctx.sessionId, namer),
             threadText,
@@ -376,7 +390,7 @@ class Daughter {
         const turnKey = `${ctx.sessionId}:${ctx.turnId}`;
         if (this.handledTurns.has(turnKey)) {
             this.logger.debug('afterResponse_skipped_duplicate', { sessionId: ctx.sessionId, turnId: ctx.turnId });
-            return { skillsUpdated: [], evolutionIds: [] };
+            return { skillsUpdated: [], skillProposals: [], evolutionIds: [] };
         }
         this.handledTurns.set(turnKey, Date.now());
         if (this.handledTurns.size > 512) {
@@ -389,6 +403,7 @@ class Daughter {
         const now = ctx.now();
         const l5 = this.getL5(ctx, persona);
         const toolsUsed = input.toolsUsed ?? [];
+        const skillProposals = [];
         const event = extractEvent(ctx, userText, assistantText, l5, this.rng);
         // "局"归并：时间相邻 + 话题相似的事件归成一个 thread（跨窗口也算同一局）
         let openThreads = null;
@@ -460,7 +475,9 @@ class Daughter {
             }
         }
         // §9.1 状态机入口：一轮里跑通了多步工具序列就沉淀成技能草稿
-        const learned = learnDraftSkill(store, this.config, { userText, tools: toolsUsed, now });
+        const learned = learnDraftSkill(store, this.config, { userText, tools: toolsUsed, now, proposal: true });
+        if (learned)
+            skillProposals.push(learned.skill);
         if (learned) {
             skillsUpdated.push(learned.skill.id);
             evolutionIds.push(learned.evolutionId);
@@ -493,7 +510,32 @@ class Daughter {
             this.logger.warn('输出包含诊断性标签', { label, sessionId: ctx.sessionId });
         }
         this.promptCache.delete(sessionKey(ctx));
-        return { eventId: ingested.eventId, skillsUpdated, evolutionIds };
+        return { eventId: ingested.eventId, skillsUpdated, skillProposals, evolutionIds };
+    }
+    reviewSkillProposal(input) {
+        return reviewSkillProposal(this.store(input.characterId), input.skillId, input.approve, input.now);
+    }
+    deleteSkills(input) {
+        const store = this.store(input.characterId);
+        const ids = [...new Set(input.skillIds)];
+        const before = ids.map((id) => store.loadSkill(id)).filter((skill) => skill !== null);
+        const deleted = [];
+        const missing = [];
+        for (const id of ids)
+            (store.deleteSkill(id) ? deleted : missing).push(id);
+        if (deleted.length > 0) {
+            this.promptCache.clear();
+            store.appendEvolution({
+                id: store.newEvolutionId(input.now),
+                characterId: input.characterId,
+                target: 'skill',
+                before: { skills: before.filter((skill) => deleted.includes(skill.id)).map((skill) => ({ id: skill.id, name: skill.name })) },
+                after: { deleted },
+                reason: '主人在脑星图勾选删除无用技能；固化资产保留',
+                at: input.now,
+            });
+        }
+        return { deleted, missing };
     }
     async retrieve(input) {
         const store = this.store(input.characterId);

@@ -300,7 +300,7 @@ export function scoreSkills(
 ): ScoredSkill[] {
   return skills
     // draft 也参与激活（§9.1「可执行，需确认」），deprecated 永不激活
-    .filter((skill) => skill.status === 'active' || skill.status === 'frozen' || skill.status === 'draft')
+    .filter((skill) => (skill.status === 'active' || skill.status === 'frozen' || skill.status === 'draft') && skill.approval !== 'pending' && skill.approval !== 'rejected')
     .map((skill) => {
       const keywordHits = skill.keywords.filter((keyword) => keyword && userText.includes(keyword)).length;
       const similarity = diceSimilarity(userText, `${skill.name} ${skill.intent} ${skill.keywords.join(' ')}`);

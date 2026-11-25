@@ -45,7 +45,27 @@ export interface L2Relationship {
     relationshipDepth: Unit;
     /** 依恋底色，由焦虑/回避两维推导；混乱型只能靠"靠近—伤害"循环演化 */
     attachmentType?: AttachmentType;
+    /** 对不同对象的稀疏情感向量；键为 user / stranger，旧存档缺省时按关系基线推导 */
+    bonds?: Record<string, BondEmotion>;
     updatedAt: ISOTime;
+}
+/** 对人的情感：各成分独立计强，亲近与怨意可以同时很高，不做归一化 */
+export interface BondEmotion {
+    affection: Unit;
+    trust: Unit;
+    hurt: Unit;
+    resentment: Unit;
+    longing: Unit;
+    updatedAt: ISOTime;
+}
+/** 当下心情向量：同样不归一，避免"又爱又恨"被平均成平静 */
+export interface EmotionMix {
+    joy: Unit;
+    sadness: Unit;
+    anger: Unit;
+    fear: Unit;
+    disgust: Unit;
+    surprise: Unit;
 }
 /** 自我叙事三轴：不是结论标签，只作为后续事件的解读滤镜 */
 export interface SelfNarrative {
@@ -134,6 +154,8 @@ export interface L5State {
     sessionId: string;
     characterId: string;
     emotion: PadState;
+    /** 可共存的心情成分；旧快照缺省时从 PAD 投影 */
+    emotionMix?: EmotionMix;
     stress: Unit;
     safety: Unit;
     fatigue: Unit;
@@ -224,6 +246,10 @@ export interface SkillCard {
     failStreak?: number;
     /** 熔断解除时间：此前该技能只避不做，冷却按失败次数指数增长 */
     breakerUntil?: ISOTime;
+    /** 主动学习提案：pending 不参与激活；确认后才进入草稿影子试用 */
+    approval?: 'pending' | 'approved' | 'rejected';
+    /** 新技能试用期：草稿不会被首次成功直接转正，改由影子样本判定 */
+    trialOnly?: boolean;
     /** 影子池（DEF-19）：候选版本在同一任务上并行记账，样本够且胜率过线才转正 */
     shadow?: SkillShadow;
     /** 转正前的上一版快照，用于精确回滚（内容寻址账本后置，这里先按版本快照） */
@@ -443,8 +469,28 @@ export interface DaughterPlugin {
     }): Promise<{
         eventId?: string;
         skillsUpdated: string[];
+        skillProposals: SkillCard[];
         evolutionIds: string[];
     }>;
+    /** 主人确认或拒绝一条主动学习提案 */
+    reviewSkillProposal(input: {
+        characterId: string;
+        skillId: string;
+        approve: boolean;
+        now: ISOTime;
+    }): {
+        skill: SkillCard | null;
+        changed: boolean;
+    };
+    /** 星图勾选删除：只删技能卡，保留独立固化资产 */
+    deleteSkills(input: {
+        characterId: string;
+        skillIds: string[];
+        now: ISOTime;
+    }): {
+        deleted: string[];
+        missing: string[];
+    };
     retrieve(input: {
         characterId: string;
         query: string;
@@ -605,6 +651,24 @@ export interface ThinkPlan {
     reason: SpeakReason;
 }
 /**
+ * 会话窗口投递：把"她主动说的话"作为插件来源的消息送进当前会话，
+ * 由模型生成一条真正的回复显示在对话里。
+ * 与 expression 出口互斥——开启后同一句话不会再发到桌宠，避免两处重复。
+ */
+export interface SpeakConversationConfig {
+    enabled: boolean;
+    /** 指定会话 id；留空表示用最近有用户输入的会话 */
+    session_id: string;
+    /** 覆盖内置的开口提示；留空用默认框架 */
+    prompt: string;
+    /** 每天最多送进会话几次，独立于 speak.max_per_day */
+    max_per_day: number;
+    /** 两次会话主动消息之间的最小间隔（分钟），防止连续打断 */
+    min_gap_min: number;
+    /** 干跑：只写日志，不记配额也不入队 */
+    dry_run: boolean;
+}
+/**
  * 主动开口的参数。默认高频检查、低频开口：
  * 每 `check_interval_min` 分钟评估一次，但真开口要同时过冷却、日上限与安静时段。
  */
@@ -649,6 +713,8 @@ export interface SpeakConfig {
     shadow: boolean;
     /** 是否记录 act/hold/silent 的按日聚合，供面板看沉默比例 */
     stats: boolean;
+    /** 会话窗口投递（第二条出口）；默认关闭，开启后优先于 expression 出口 */
+    conversation: SpeakConversationConfig;
 }
 /**
  * 出口配置。`vpet` 走游戏的事件队列；`pet` 走 DSH 内置桌宠（dsh-pet）的路由；
@@ -747,6 +813,23 @@ export interface ScoreWeights {
     emotion_match: number;
     link_proximity: number;
 }
+/**
+ * 艾宾浩斯遗忘曲线：保留率 R = e^(-间隔/稳定度)。
+ * 稳定度越大忘得越慢；情绪唤醒、情绪强度与重要度会把稳定度拉长，
+ * 所以"情绪重、分量重"的记忆留得久，平淡小事退得快。
+ */
+export interface ForgettingConfig {
+    /** 关掉后退回旧的半衰期曲线，老配置行为不变 */
+    enabled: boolean;
+    /** 基础稳定度（天）：间隔等于它时保留约 0.37 */
+    base_stability_days: number;
+    /** 情绪唤醒对稳定度的放大系数 */
+    arousal_gain: number;
+    /** 情绪愉悦度绝对值对稳定度的放大系数 */
+    pleasure_gain: number;
+    /** 记忆权重对稳定度的放大系数 */
+    weight_gain: number;
+}
 /** A1 日志层：每轮情绪识别的可观测记录，不存原文（只存哈希） */
 export interface PolarityLogEntry {
     at: ISOTime;
@@ -780,6 +863,8 @@ export interface DaughterConfig {
     retrieval: {
         top_k: number;
         half_life_days: number;
+        /** 遗忘曲线；关闭时按 half_life_days 的半衰期计算 */
+        forgetting: ForgettingConfig;
         surprise_eta: number;
         exclude_archived: boolean;
         max_candidates: number;

@@ -155,6 +155,8 @@ export declare class Store {
     saveSafetyState(state: SafetyState): void;
     loadSkills(): SkillCard[];
     saveSkill(skill: SkillCard): void;
+    /** 只删除当前角色自己的技能卡；路径与角色都校验，固化资产不连带删除 */
+    deleteSkill(id: string): boolean;
     loadSkill(id: string): SkillCard | null;
     /**
      * 读-改-写技能（持锁）：两个进程同时累计成熟度时，后写者基于磁盘最新值重算，
