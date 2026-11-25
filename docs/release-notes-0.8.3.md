@@ -33,4 +33,4 @@
 ## 发布状态
 
 - 功能提交 `3d0ee0d` 已推 main，市场索引登记 0.8.3 并指向该提交。
-- npm 0.8.3 暂未发布：本机 npm 登录已失效（`npm whoami` 401，发布返回 404）；重新 `npm login` 后执行 `npm publish` 即可补发。
+- npm 0.8.3 的 `npm publish` 已被 registry 接受（`+ dsh-daughter@0.8.3`）；查询端仍在处理，截至本次更新 `latest` 暂为 0.8.2。
