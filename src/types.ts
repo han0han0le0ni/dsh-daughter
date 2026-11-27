@@ -495,6 +495,67 @@ export interface SkillActivation {
   breakdown?: MotivationBreakdown[];
 }
 
+/** 设置面板「人格」页的只读快照 + 控制状态 */
+export interface PersonalitySnapshot {
+  bigFive: BigFive;
+  innate: BigFive;
+  temperament: L1Baseline['temperament'];
+  attachment: { anxiety: Unit; avoidance: Unit };
+  narrative: { worldSafe: Unit; othersReliable: Unit; selfWorth: Unit };
+  stage: L2Relationship['relationshipStage'];
+  /** 演化总开关的当前值（personality.enabled） */
+  evolving: boolean;
+  /** 被锁定的维度，见 personality-control.ts 的 LOCK_KEYS */
+  locked: string[];
+  /** 上次重抽用的种子；null 表示沿用出生种子 */
+  seed: number | null;
+  updatedAt: ISOTime;
+}
+
+export interface PortraitPerson {
+  name: string;
+  eventCount: number;
+  intimacy: number;
+  relationship: string;
+  trend: '升温' | '降温' | '稳定';
+  firstMet: ISOTime;
+  lastAt: ISOTime;
+}
+
+export interface ThingPortrait {
+  label: string;
+  preference: number;
+  mood: string;
+}
+
+/** 「画像」页：她眼里的自己 / 你 / 其他人 / 事物 */
+export interface PortraitBundle {
+  self: {
+    name: string;
+    /** 她怎么自称 */
+    selfRef: string;
+    /** 她怎么称呼对方 */
+    userRef: string;
+    background: string;
+    voice: string;
+    /** 绝不主动提起的话题 */
+    taboos: string[];
+    temperament: L1Baseline['temperament'];
+    attachment: { anxiety: Unit; avoidance: Unit };
+    narrative: { worldSafe: Unit; othersReliable: Unit; selfWorth: Unit };
+    stage: L2Relationship['relationshipStage'];
+    /** 与主人的亲密度；还没有过对话时为 null */
+    intimacy: number | null;
+  };
+  user: PortraitPerson | null;
+  others: PortraitPerson[];
+  things: { likes: ThingPortrait[]; dislikes: ThingPortrait[] };
+  /** 最强三项性格措辞，与 prompt 注入同一口径 */
+  traits: Array<{ label: string; weight: number }>;
+  /** 最近 30 天反复出现的主题，用于「快速了解她最近在想什么」 */
+  recentTopics: string[];
+}
+
 export interface DaughterPlugin {
   onUserMessage(input: {
     ctx: PluginContext;
@@ -596,6 +657,28 @@ export interface DaughterPlugin {
 
   /** 星图面板：按当前库实时重算并落盘，返回节点/边/星系计数 */
   starMap(characterId: string, now: ISOTime): { nodes: number; edges: number; galaxies: number };
+
+  /** 设置面板「人格」页：五维、依恋、自我叙事、演化开关与锁定项 */
+  personalitySnapshot(characterId: string, now: ISOTime): PersonalitySnapshot;
+
+  /** 手填五维 / 更新锁定项。只改传入的字段，未传的保持原样 */
+  updatePersonality(input: {
+    characterId: string;
+    now: ISOTime;
+    bigFive?: Partial<BigFive>;
+    locked?: string[];
+    seed?: number | null;
+  }): PersonalitySnapshot;
+
+  /** 重抽初始人格：换一组五维与依恋底色，保留关系、记忆与技能 */
+  rerollPersonality(input: {
+    characterId: string;
+    now: ISOTime;
+    seed?: number;
+  }): PersonalitySnapshot;
+
+  /** 设置面板「画像」页：自我 / 用户 / 他人 / 事物偏好 */
+  portraits(characterId: string, now: ISOTime): PortraitBundle;
 
   /**
    * 接收桌宠上报的生理信号（体力/心情）。缺席即视为没有桌宠：

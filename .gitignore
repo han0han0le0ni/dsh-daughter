@@ -15,6 +15,7 @@ archive/
 logs/
 star_map/
 takeover/
+settings/
 
 # 文档截图可能包含个人界面内容，默认不入库（需要时用 -f 单独加）
 docs/screenshots/

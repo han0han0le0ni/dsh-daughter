@@ -11,6 +11,8 @@ import { registerDesktopObserveTool } from './runtime/desktop-observe.js';
 import { registerDesktopInputTool } from './runtime/desktop-input.js';
 import { feedbackQueuePath, feedbackStatus, retryPendingFeedback, submitFeedback, } from './runtime/feedback.js';
 import { MoodMotionGate } from './runtime/mood-motion.js';
+import { loadPersonaCard, personaCardPath, savePersonaCard } from './runtime/persona-card.js';
+import { registerSelfProfileTool } from './runtime/self-profile.js';
 import { parseSkillProposalCommand } from './runtime/maintenance.js';
 import { VpetBridgeState } from './runtime/vpet-events.js';
 import { buildExpressionSinks, dispatchExpression } from './runtime/expression.js';
@@ -1032,7 +1034,7 @@ export function createHost(ctx, rawConfig, pluginRoot) {
             }
             const offStarMap = registerStarMapPanel(ctx, plugin, pluginRoot, config.character_id, logger);
             const offFeedback = registerFeedbackPanel(ctx, pluginRoot, config, logger);
-            const offSettings = registerSettingsPanel(ctx, pluginRoot, config, logger, overridePath, overrides, base);
+            const offSettings = registerSettingsPanel(ctx, plugin, pluginRoot, config.character_id, config, logger, overridePath, overrides, base);
             const bridge = startBridge(plugin, pluginContext({ id: EXTERNAL_SESSION_ID }, 0), config, logger, connectorToken, pluginRoot);
             // 接管清单只读：启动时扫一次，弄清哪些通道已接、哪些还没接，不重复建设
             void writeTakeoverInventory(ctx, pluginRoot, config, logger);
@@ -1053,6 +1055,13 @@ export function createHost(ctx, rawConfig, pluginRoot) {
                     logger,
                     guard: toolGate,
                 });
+            // 自读工具：让她按需读取自己的角色卡与人格数值，每次现读，设置改完立即生效
+            const offSelfProfile = registerSelfProfileTool(ctx, {
+                logger,
+                guard: toolGate,
+                readPersonality: () => plugin.personalitySnapshot(config.character_id, new Date().toISOString()),
+                readPortraits: () => plugin.portraits(config.character_id, new Date().toISOString()),
+            });
             return () => {
                 clearInterval(timer);
                 if (ambientTimer)
@@ -1068,6 +1077,7 @@ export function createHost(ctx, rawConfig, pluginRoot) {
                 offVpetControl();
                 offDesktopObserve();
                 offDesktopInput();
+                offSelfProfile();
                 bridge.close();
                 offPreStep();
                 offSession();
@@ -1298,12 +1308,13 @@ function registerFeedbackPanel(ctx, pluginRoot, config, logger) {
     }
 }
 /** DSH 原生设置弹窗里的页面：功能开关 + 意见反馈，都走插件自带路由 */
-function registerSettingsPanel(ctx, pluginRoot, config, logger, overridePath, overrides, base) {
+function registerSettingsPanel(ctx, plugin, pluginRoot, characterId, config, logger, overridePath, overrides, base) {
     const server = ctx.webServer;
     if (!server || typeof server.register !== 'function') {
         logger.warn('dsh-daughter: 无 webServer 服务，跳过设置页面');
         return () => { };
     }
+    const dataRoot = resolveDataRoot(pluginRoot, config);
     const readBody = async (req) => {
         let text = '';
         for await (const chunk of req) {
@@ -1321,6 +1332,78 @@ function registerSettingsPanel(ctx, pluginRoot, config, logger, overridePath, ov
             return;
         }
         const path = new URL(req.url ?? '/', 'http://dsh.local').pathname.replace(/\/+$/, '');
+        // 角色卡：主人手写的身份设定，读写 settings/persona.json；空卡等于不注入
+        if (path === '/daughter-settings/api/persona' && req.method === 'GET') {
+            sendJson(res, 200, { card: loadPersonaCard(dataRoot), path: personaCardPath(dataRoot) });
+            return;
+        }
+        if (path === '/daughter-settings/api/persona' && req.method === 'POST') {
+            try {
+                const body = (await readBody(req));
+                const card = savePersonaCard(dataRoot, body.card ?? body);
+                logger.info('dsh-daughter: 角色卡已更新', { path: personaCardPath(dataRoot) });
+                sendJson(res, 200, { card });
+            }
+            catch (error) {
+                sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+            }
+            return;
+        }
+        // 人格页：快照 / 手填五维与锁定 / 重抽；画像页：自我、用户与他人
+        if (path === '/daughter-settings/api/personality' && req.method === 'GET') {
+            sendJson(res, 200, plugin.personalitySnapshot(characterId, new Date().toISOString()));
+            return;
+        }
+        if (path === '/daughter-settings/api/personality' && req.method === 'POST') {
+            try {
+                const body = (await readBody(req));
+                const source = body.bigFive && typeof body.bigFive === 'object' && !Array.isArray(body.bigFive)
+                    ? body.bigFive
+                    : {};
+                const bigFive = {};
+                for (const [key, value] of Object.entries(source)) {
+                    if (typeof value === 'number' && Number.isFinite(value))
+                        bigFive[key] = value;
+                }
+                const locked = Array.isArray(body.locked)
+                    ? body.locked.filter((key) => typeof key === 'string')
+                    : undefined;
+                const seed = typeof body.seed === 'number' || body.seed === null ? body.seed : undefined;
+                const snapshot = plugin.updatePersonality({
+                    characterId,
+                    now: new Date().toISOString(),
+                    bigFive,
+                    locked,
+                    seed,
+                });
+                logger.info('dsh-daughter: 人格设置已更新', { locked: snapshot.locked.length, seed: snapshot.seed });
+                sendJson(res, 200, snapshot);
+            }
+            catch (error) {
+                sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+            }
+            return;
+        }
+        if (path === '/daughter-settings/api/personality/reroll' && req.method === 'POST') {
+            try {
+                const body = (await readBody(req));
+                const seed = typeof body.seed === 'number' && Number.isFinite(body.seed) ? body.seed : undefined;
+                sendJson(res, 200, plugin.rerollPersonality({ characterId, now: new Date().toISOString(), seed }));
+            }
+            catch (error) {
+                sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+            }
+            return;
+        }
+        if (path === '/daughter-settings/api/portraits' && req.method === 'GET') {
+            try {
+                sendJson(res, 200, plugin.portraits(characterId, new Date().toISOString()));
+            }
+            catch (error) {
+                sendJson(res, 500, { error: String(error) });
+            }
+            return;
+        }
         if (path === '/daughter-settings/api/config' && req.method === 'GET') {
             sendJson(res, 200, { fields: settingsSnapshot(config, overrides), overridePath });
             return;

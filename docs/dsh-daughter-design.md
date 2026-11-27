@@ -5,7 +5,7 @@
 | 插件名 | dsh-daughter |
 | 文档类型 | 设计文档 / 技术评审稿（不含实现代码） |
 | 目标运行形态 | TypeScript / Node 插件 |
-| 状态 | 待评审（P0–P8 已落地并核对，P9 3/7；核对基准：当前版本 <!--docsync:version-->0.8.3<!--/docsync-->，`npm test` <!--docsync:test_count-->348<!--/docsync--> 项、`npm run check:link` <!--docsync:check_items-->22<!--/docsync--> 项全绿、`tsc --noEmit` 无错） |
+| 状态 | 待评审（P0–P8 已落地并核对，P9 3/7；核对基准：当前版本 <!--docsync:version-->0.8.3<!--/docsync-->，`npm test` <!--docsync:test_count-->372<!--/docsync--> 项、`npm run check:link` <!--docsync:check_items-->22<!--/docsync--> 项全绿、`tsc --noEmit` 无错） |
 | 日期 | 2026-11-02（v0.2 2026-11-04；v0.3 加固 + 桌宠弱耦合 2026-11-04；v0.4 认知滤网 + 星图观感 + 记忆情感闭环 2026-11-05；v0.5 性格多样性演化 2026-11-06） |
 | 适用范围 | 人格陪伴、长期记忆、技能与资产、条件反射、多应用连接 |
 
@@ -1260,6 +1260,18 @@ vpet:
 
 星图面板（`/star-map/`）只做只读观测：星系图、L1–L4 参数与出厂值偏移、L5 快照、存储统计、最近演化、四项指标。插件不再附带任何输出形态（语音 / 形象 / 皮肤），见 §2.3 非目标。
 
+**角色卡**（`settings/persona.json`）：主人手写的名字、自称、称呼对方、一句话背景、说话风格与「绝不主动提起」清单，由设置面板「她是谁」页编辑，服务端路由 `/daughter-settings/api/persona` 读写。同一页还按 `/daughter-settings/api/portraits` 把记忆与人格实时整理成一块只读信息：名字、最强三项性格措辞、关系阶段与亲密度、共同经历条数、最近 30 天常聊主题、喜恶、重要的人；下半的手写字段只是「微调覆盖」，留空就沿用记忆与自动整理的结果。两者在同一张卡片里，不再分成「自动」和「手写」两套设定。
+
+**旧名字补全**：角色卡上线前，主人给过的名字只存在对话记忆里。`name-infer.ts` 用几条高精度句式（`起了名字：X`、`名字是 X`、`你叫 X`、`→ X。`）从事件里提取候选，要求至少出现两次、过滤「什么 / 名字」等问句词，同票取最近一次；`adoptStoredName` 在首次构建 prompt 或打开画像页时跑一次，只在角色卡没有名字时把结果写回 `settings/persona.json`，之后 prompt 注入与设置页都能读到。已有名字不会被记忆覆盖。注入时放在 persona 块最前面，优先于由 L1–L4 推演出的性格描述；它不参与演化、不被情绪覆盖，空卡不产生任何文本。字段长度与条数在 `normalizePersonaCard` 收敛，避免角色卡把整个 persona 块预算吃光。
+
+**人格控制与画像**（`settings/personality.json` + `/daughter-settings/api/personality`）：
+- 「人格」页展示五维、出生锚点、依恋两维与自我叙事三轴；支持手填五维（同时改写 `innate` 锚点并按新值重算气质，否则下次演化会被 `drift_cap` 夹回）、逐项锁定（`openness` / `conscientiousness` / `extraversion` / `agreeableness` / `neuroticism` / `attachment` / `narrative`）、演化总开关（`personality.enabled`）与按种子重抽初始人格。
+- 锁定同时作用于两条演化路径：`applyPersonalitySignal`（累积/关键事件）与 `applyPersonaDrift`（语气微调）。锁住的维度不写盘、不记证据；三维全锁时整轮不产生演化记录。总开关关闭时两条路径都停，读取、注入、记忆与情绪不受影响。
+- 重抽保留关系进度、对人情感、记忆、技能与日常情绪，只把五维、气质、依恋底色换到新种子的出生值，并写入演化日志与 `seed` 便于复现。
+- 「画像」页只读展示她眼里的自己（角色卡 + 气质 + 依恋 + 叙事三轴 + 与主人的亲密度）、主人、其他人与稳定喜恶；数据与 prompt 注入共用 `buildPersonProfiles` / `buildThingProfiles`，不另算一套口径。
+
+**自读工具 `daughter_self`**：她可以在对话中按需读取自己的当前设定——身份（名字 / 自称 / 称呼 / 背景 / 说话风格 / 禁忌）、五维与气质、依恋、自我叙事、关系和亲密度、锁定维度、演化开关、重抽种子、喜恶与其他人。工具每次调用都重新读控制文件与人格层，不缓存，因此设置页改完或重抽之后立即反映新值；它只读，不写任何设定。persona 块末尾附一句调用提示，避免模型凭上一轮印象编造。注册失败（宿主没有 `tools` 服务）时只告警，不影响插件其它功能。
+
 **配置优先级**：角色级配置 > 插件默认配置 > 内置兜底。所有数值型配置做范围校验，非法值回落默认并告警。
 
 ---
@@ -1422,7 +1434,7 @@ security.connector_token（≥16 字符，显式固定，多机/容器用）
 
 ### 14.1 实现核对（截至 2026-11-06 v0.5）
 
-核对基准：`src/` 当前构建（**<!--docsync:test_count-->348<!--/docsync--> 项测试 + <!--docsync:check_items-->22<!--/docsync--> 项自检全绿**）+ VPet MOD 实测 + Android ADB / 电脑桌面本地模拟。
+核对基准：`src/` 当前构建（**<!--docsync:test_count-->372<!--/docsync--> 项测试 + <!--docsync:check_items-->22<!--/docsync--> 项自检全绿**）+ VPet MOD 实测 + Android ADB / 电脑桌面本地模拟。
 
 | 项 | 设计表述 | 实现现状 | 处置 |
 | --- | --- | --- | --- |
@@ -1697,7 +1709,7 @@ security.connector_token（≥16 字符，显式固定，多机/容器用）
 | 6 | 条数与选句都由种子派生，可复现 | `evaluateThink` 的 `seed` | 同种子两次结果一致 |
 | 7 | 与主动开口共用一条环境节拍，但开关独立 | `host.ts` 的 `ambientTimer` | 只开 think 也会评估；只关心 speak 时 think 不产出 |
 
-验证基线：`tests/think.test.ts` **5 项**。当前 `npm test` <!--docsync:test_count-->348<!--/docsync--> 项全绿。
+验证基线：`tests/think.test.ts` **5 项**。当前 `npm test` <!--docsync:test_count-->372<!--/docsync--> 项全绿。
 
 > 已知缺口：尽管叫"思考"，它并不挂在模型回合的 thinking 阶段，而是独立节拍上的自我对话；文案仍是模板池，后续接模型生成时可替换 `THINK_LINES` 而不动节流与出口。
 
@@ -1920,7 +1932,7 @@ PAD 继续作为现有阈值、检索和桌宠动作的兼容投影；新增两�
 - [x] 记忆与情感闭环已修复（§14.7，当时测试 103 项全绿：情绪量程、回忆重构、情感回落、L2 锚点、超级节点、存量显著性、同题口径）
 - [x] 性格多样性演化已落地（§4.8 / §14.8，`tests/personality.test.ts` 9 项）
 - [x] 行为动机已落地（§14.9，`tests/motivation.test.ts` 14 项；人格双通路 + 零信号收口）
-- [x] 主动开口已落地（§14.10，`tests/speak.test.ts` 20 项；思念饱和 + 欲言又止 + 三重兜底 + 出口抽象 + 桌面场景感知 + 首次开启锚点；**代码默认仍为关闭，本机 `config.yaml` 已显式开启并调为活跃档**，当前 `npm test` <!--docsync:test_count-->348<!--/docsync--> 项全绿）
+- [x] 主动开口已落地（§14.10，`tests/speak.test.ts` 20 项；思念饱和 + 欲言又止 + 三重兜底 + 出口抽象 + 桌面场景感知 + 首次开启锚点；**代码默认仍为关闭，本机 `config.yaml` 已显式开启并调为活跃档**，当前 `npm test` <!--docsync:test_count-->372<!--/docsync--> 项全绿）
 - [x] 思考碎碎念已落地（§14.11，`tests/think.test.ts` 5 项；独立 think 通道、不写事件、不影响 `memoryHit`、每轮 ≤2 条且单条 ≤40 字，与主动开口共用节拍但开关独立）
 - [x] L3 证据表已落地（§14.12，`tests/l3-evidence.test.ts` 3 项；单批事件只写 delta=0 证据，同向 ≥3 次才转正并写演化日志）
 - [x] speak 影子模式与统计已落地（§14.10，`tests/speak-shadow.test.ts` 3 项；影子评估不投递不写状态，按日聚合 act/hold/silent）

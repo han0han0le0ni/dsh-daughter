@@ -1,5 +1,6 @@
 import { clamp01, createRng, hashText, truncate } from '../util.js';
 import { sentimentPolarity } from './state.js';
+import { EMPTY_CONTROL } from './personality-control.js';
 /** 冲击度权重：出现即说明这不是一句普通闲聊 */
 const CRITICAL_MARKERS = [
     '分手', '离开我', '不要我', '别来找我', '再也不', '永远不', '背叛', '滚开',
@@ -99,9 +100,7 @@ export function createInitialL1(characterId, seed, initial = { ranges: DEFAULT_I
         agreeableness: round3(agreeableness),
         neuroticism: round3(neuroticism),
     };
-    const temperament = extraversion < 0.42
-        ? 'slow_warmup'
-        : extraversion > 0.6 ? 'eager' : neuroticism > 0.5 ? 'guarded' : 'steady';
+    const temperament = temperamentOf(bigFive);
     return {
         bigFive,
         innate: { ...bigFive },
@@ -112,6 +111,12 @@ export function createInitialL1(characterId, seed, initial = { ranges: DEFAULT_I
         plasticity: 0.65,
         updatedAt: now,
     };
+}
+/** 气质由五维里最外显的两维决定；手填五维后也要按同一口径重算 */
+export function temperamentOf(bigFive) {
+    return bigFive.extraversion < 0.42
+        ? 'slow_warmup'
+        : bigFive.extraversion > 0.6 ? 'eager' : bigFive.neuroticism > 0.5 ? 'guarded' : 'steady';
 }
 /** 出生依恋：先验决定落点；混乱型不出生 */
 export function createInitialL2(characterId, seed, initial = { ranges: DEFAULT_INITIAL_RANGES, attachment_priors: DEFAULT_ATTACHMENT_PRIORS }, now = '1970-01-01T00:00:00.000Z') {
@@ -181,7 +186,7 @@ export function scoreImpact(text, l5, thresholds = { cumulative: 0.3, critical: 
  * 把一次对话的冲击落到人格上。
  * 只有 cumulative / critical 会写 L1–L3；回复 routine 直接返回 changed=false。
  */
-export function applyPersonalitySignal(store, config, input) {
+export function applyPersonalitySignal(store, config, input, control = EMPTY_CONTROL) {
     const settings = config.personality;
     const empty = { changed: false, kind: 'routine', impact: 0, layers: [], evolutionIds: [] };
     if (!settings?.enabled)
@@ -231,6 +236,9 @@ export function applyPersonalitySignal(store, config, input) {
     const repairScale = direction > 0 && repair ? repairFactor : direction < 0 ? damageFactor : 1;
     const step = baseStep * (1 + streakBonus) * repairScale;
     const drift = (key, weight) => {
+        // 主人锁定的维度不参与演化：证据链也不记，避免面板出现"想改但没改"的假记录
+        if (control.locked.includes(key))
+            return 0;
         const anchor = anchors[key];
         const current = l1.bigFive[key];
         const lower = Math.max(0.02, anchor - cap);
@@ -273,10 +281,12 @@ export function applyPersonalitySignal(store, config, input) {
         evolutionIds.push(entryId);
     }
     /* ------------------------------ L2 依恋 ------------------------------ */
-    const anxietyDelta = direction > 0
+    // 锁定依恋时把两个增量归零：后面的落盘条件自然不成立，元数据也不会被写
+    const attachmentLocked = control.locked.includes('attachment');
+    const anxietyDelta = attachmentLocked ? 0 : direction > 0
         ? -0.06 * impact * (repair ? repairFactor : 1)
         : 0.08 * impact * damageFactor;
-    const avoidanceDelta = direction > 0
+    const avoidanceDelta = attachmentLocked ? 0 : direction > 0
         ? -0.05 * impact * (repair ? repairFactor : 1)
         : 0.05 * impact * damageFactor;
     const nextAnxiety = round3(clamp01(anxiety + anxietyDelta));
@@ -324,20 +334,25 @@ export function applyPersonalitySignal(store, config, input) {
     }
     /* --------------------------- L3 自我叙事 --------------------------- */
     const narrative = l3.narrative ?? defaultNarrative(now);
-    const nextNarrative = {
-        worldSafe: round3(clamp01(narrative.worldSafe + direction * 0.04 * impact)),
-        othersReliable: round3(clamp01(narrative.othersReliable + direction * 0.1 * impact)),
-        selfWorth: round3(clamp01(narrative.selfWorth + direction * 0.05 * impact)),
-        lockedAxes: [...(narrative.lockedAxes ?? [])],
-        updatedAt: now,
-    };
-    const lock = (axis, value) => {
-        if ((value <= 0.25 || value >= 0.8) && !nextNarrative.lockedAxes.includes(axis))
-            nextNarrative.lockedAxes.push(axis);
-    };
-    lock('worldSafe', nextNarrative.worldSafe);
-    lock('othersReliable', nextNarrative.othersReliable);
-    lock('selfWorth', nextNarrative.selfWorth);
+    const narrativeLocked = control.locked.includes('narrative');
+    const nextNarrative = narrativeLocked
+        ? { ...narrative, lockedAxes: [...(narrative.lockedAxes ?? [])] }
+        : {
+            worldSafe: round3(clamp01(narrative.worldSafe + direction * 0.04 * impact)),
+            othersReliable: round3(clamp01(narrative.othersReliable + direction * 0.1 * impact)),
+            selfWorth: round3(clamp01(narrative.selfWorth + direction * 0.05 * impact)),
+            lockedAxes: [...(narrative.lockedAxes ?? [])],
+            updatedAt: now,
+        };
+    if (!narrativeLocked) {
+        const lock = (axis, value) => {
+            if ((value <= 0.25 || value >= 0.8) && !nextNarrative.lockedAxes.includes(axis))
+                nextNarrative.lockedAxes.push(axis);
+        };
+        lock('worldSafe', nextNarrative.worldSafe);
+        lock('othersReliable', nextNarrative.othersReliable);
+        lock('selfWorth', nextNarrative.selfWorth);
+    }
     const narrativeChanged = Math.abs(nextNarrative.othersReliable - narrative.othersReliable) >= 0.005
         || Math.abs(nextNarrative.selfWorth - narrative.selfWorth) >= 0.005
         || Math.abs(nextNarrative.worldSafe - narrative.worldSafe) >= 0.005;
@@ -371,6 +386,100 @@ export function applyPersonalitySignal(store, config, input) {
         layers,
         evolutionIds,
     };
+}
+const BIG_FIVE_KEYS = [
+    'openness',
+    'conscientiousness',
+    'extraversion',
+    'agreeableness',
+    'neuroticism',
+];
+/**
+ * 主人手填五维：同时改写出生锚点。
+ * 只改当前值而不动 innate，下一次演化会立刻被 drift_cap 夹回旧锚点，
+ * 等于「填了但没生效」，所以这里把锚点和当前值一起落下去。
+ */
+export function applyBigFiveSetup(store, values, now) {
+    const persona = store.loadPersona();
+    const before = persona.l1;
+    const bigFive = { ...before.bigFive };
+    for (const key of BIG_FIVE_KEYS) {
+        const value = values[key];
+        if (typeof value === 'number' && Number.isFinite(value))
+            bigFive[key] = round3(value);
+    }
+    const l1 = {
+        ...before,
+        bigFive,
+        innate: { ...bigFive },
+        temperament: temperamentOf(bigFive),
+        updatedAt: now,
+    };
+    store.savePersonaLayer('l1', l1);
+    const entryId = store.newEvolutionId(now);
+    store.appendEvolution({
+        id: entryId,
+        characterId: store.characterId,
+        target: 'L1',
+        before: { bigFive: before.bigFive },
+        after: { bigFive },
+        reason: '主人在设置面板手填五维，出生锚点同步改写',
+        at: now,
+    });
+    return l1;
+}
+/**
+ * 重抽初始人格：按新种子重新抽五维与依恋底色。
+ * 保留关系进度、对人情感、记忆与技能——重抽的是「她本来是什么样」，
+ * 不是把处出来的关系一起抹掉。
+ */
+export function rerollInitialPersonality(store, config, seed, now) {
+    const persona = store.loadPersona();
+    const initial = config.personality.initial ?? {
+        ranges: DEFAULT_INITIAL_RANGES,
+        attachment_priors: DEFAULT_ATTACHMENT_PRIORS,
+    };
+    const initialL1 = createInitialL1(store.characterId, seed, initial, now);
+    const initialL2 = createInitialL2(store.characterId, seed, initial, now);
+    const l1 = { ...persona.l1, ...initialL1, updatedAt: now };
+    const l2 = {
+        ...persona.l2,
+        attachmentAnxiety: initialL2.attachmentAnxiety,
+        attachmentAvoidance: initialL2.attachmentAvoidance,
+        attachmentType: initialL2.attachmentType,
+        updatedAt: now,
+    };
+    store.savePersonaLayer('l1', l1);
+    store.savePersonaLayer('l2', l2);
+    const l1Entry = store.newEvolutionId(now);
+    store.appendEvolution({
+        id: l1Entry,
+        characterId: store.characterId,
+        target: 'L1',
+        before: { bigFive: persona.l1.bigFive },
+        after: { bigFive: l1.bigFive, seed },
+        reason: `主人重抽初始人格（seed ${seed}），关系进度与记忆保留`,
+        at: now,
+    });
+    const l2Entry = store.newEvolutionId(now);
+    store.appendEvolution({
+        id: l2Entry,
+        characterId: store.characterId,
+        target: 'L2',
+        before: {
+            attachmentAnxiety: persona.l2.attachmentAnxiety,
+            attachmentAvoidance: persona.l2.attachmentAvoidance,
+            attachmentType: persona.l2.attachmentType,
+        },
+        after: {
+            attachmentAnxiety: l2.attachmentAnxiety,
+            attachmentAvoidance: l2.attachmentAvoidance,
+            attachmentType: l2.attachmentType,
+        },
+        reason: '重抽初始人格时依恋底色一并回到新锚点',
+        at: now,
+    });
+    return { l1, l2 };
 }
 function makeEvidence(store, now, eventId, layer, dimension, delta, impactKind, impact, quote) {
     return {

@@ -15,10 +15,13 @@ import { readForeground } from './runtime/desktop-observe.js';
 import { containsDiagnosisLabel, evaluateSafety } from './runtime/safety.js';
 import { logPolarity, prunePolarityLog } from './runtime/polarity-log.js';
 import { SURPRISE_REASON, applySurprise, associateEvents, extractEvent, linkNewEvent, pickAssociationSeed, recallDrift, reconstructOnRecall, retrieveEvents, } from './runtime/memory.js';
-import { NO_MATCH_CONSTRAINT, NO_MEMORY_CONSTRAINT, activateSkills, buildBlocks, buildCrossWindowDigest, buildEventDigest, buildPersonaText, buildThreadDigest, buildRelationText, buildSkillDigest, buildStateHint, clipBlocks, matchReflex, quotePriority, WORKING_STYLE, } from './runtime/content.js';
+import { NO_MATCH_CONSTRAINT, NO_MEMORY_CONSTRAINT, activateSkills, buildBlocks, buildCrossWindowDigest, buildEventDigest, buildPersonaText, buildThreadDigest, buildRelationText, buildSkillDigest, buildStateHint, clipBlocks, matchReflex, quotePriority, SELF_READ_HINT, traitWeights, WORKING_STYLE, } from './runtime/content.js';
 import { bondForAudience, bondFromL2, buildAffectHint, updateBondEmotion } from './runtime/affect.js';
-import { applyPersonalitySignal } from './runtime/personality.js';
-import { applyPersonaDrift, buildPersonProfiles, buildStarMap, buildThingProfiles, bumpSkill, observeShadow, learnDraftSkill, reviewSkillProposal, maybeFreezeSkill, runTick, } from './runtime/maintenance.js';
+import { adoptNameFromMemory } from './runtime/name-infer.js';
+import { loadPersonaCard, renderPersonaCard } from './runtime/persona-card.js';
+import { loadPersonalityControl, savePersonalityControl } from './runtime/personality-control.js';
+import { applyBigFiveSetup, applyPersonalitySignal, rerollInitialPersonality } from './runtime/personality.js';
+import { applyPersonaDrift, buildPersonProfiles, buildStarMap, buildThingProfiles, bumpSkill, observeShadow, learnDraftSkill, reviewSkillProposal, maybeFreezeSkill, recentTopicLabels, runTick, } from './runtime/maintenance.js';
 /** §6.1 时延预算：超时只告警与记日志，不做硬中断（SQLite 同步查询无法中途取消） */
 const RETRIEVE_BUDGET_MS = 150;
 const BEFORE_PROMPT_BUDGET_MS = 100;
@@ -51,6 +54,8 @@ class Daughter {
     onMotion;
     /** 连接器令牌：主动开口探测桌面桥时带上（§12.2） */
     connectorToken;
+    /** 旧记忆补名字只跑一次：设置页与 prompt 都要等到它 */
+    nameAdopted = false;
     constructor(options) {
         this.logger = options.logger ?? silentLogger;
         this.config = options.config ?? loadConfig(options.pluginRoot, this.logger);
@@ -124,6 +129,7 @@ class Daughter {
         const startedAt = performance.now();
         const { ctx } = input;
         const store = this.store(ctx.characterId);
+        this.adoptStoredName(store);
         const persona = store.loadPersona();
         const now = ctx.now();
         const l5 = this.effective(ctx.characterId, this.getL5(ctx, persona), now);
@@ -325,8 +331,12 @@ class Daughter {
         // 与注入内容同口径：续接 / 跨窗口 / 局都算「有记忆可看」，只是不算召回强化
         const hasInjectedMemory = injected.length > 0 || crossWindow.length > 0 || openThreads.length > 0;
         const memoryHit = hasInjectedMemory;
+        // 角色卡放最前面：它是主人亲手写的身份，优先级高于由经历推演出的性格与关系
+        const personaCardText = renderPersonaCard(loadPersonaCard(this.dataRoot));
         const { blocks, usedTokens } = buildBlocks({
-            personaText: [buildPersonaText(persona, sub), relationText, WORKING_STYLE].filter(Boolean).join('\n'),
+            personaText: [personaCardText, buildPersonaText(persona, sub), relationText, WORKING_STYLE, SELF_READ_HINT]
+                .filter(Boolean)
+                .join('\n'),
             stateHint: [
                 buildStateHint(l5, verdict),
                 buildAffectHint(l5, bondForAudience(persona.l2, ctx.audience, now)),
@@ -482,7 +492,13 @@ class Daughter {
             skillsUpdated.push(learned.skill.id);
             evolutionIds.push(learned.evolutionId);
         }
-        const drift = applyPersonaDrift(store, this.config, persona, sentimentPolarity(userText), now);
+        // 演化总开关与逐项锁在同一轮里只读一次：两条演化路径必须用同一份控制，
+        // 否则关掉总开关后，语气微调那条路仍会偷偷改写五维
+        const control = loadPersonalityControl(this.dataRoot);
+        const evolving = this.config.personality.enabled !== false;
+        const drift = evolving
+            ? applyPersonaDrift(store, this.config, persona, sentimentPolarity(userText), now, control.locked)
+            : { changed: false };
         if (drift.changed && drift.evolutionId)
             evolutionIds.push(drift.evolutionId);
         // 性格演化：只有「累积 / 关键」事件才动 L1–L3，日常闲聊交给 L5（写实口径）
@@ -491,7 +507,7 @@ class Daughter {
             eventId: ingested.eventId,
             l5,
             now,
-        });
+        }, control);
         if (signal.changed)
             evolutionIds.push(...signal.evolutionIds);
         const label = this.config.safety.diagnosis_labels_forbidden ? containsDiagnosisLabel(assistantText) : null;
@@ -940,6 +956,139 @@ class Daughter {
     /** 面板入口读取星图：按当前库实时重算并落盘 */
     starMap(characterId, now) {
         return buildStarMap(this.store(characterId), now);
+    }
+    /** 设置面板「人格」页：当前五维/依恋/叙事 + 演化开关 + 锁定项 */
+    personalitySnapshot(characterId, now) {
+        const store = this.store(characterId);
+        const persona = store.loadPersona();
+        const control = loadPersonalityControl(this.dataRoot);
+        const narrative = persona.l3.narrative;
+        return {
+            bigFive: persona.l1.bigFive,
+            innate: persona.l1.innate ?? persona.l1.bigFive,
+            temperament: persona.l1.temperament,
+            attachment: {
+                anxiety: persona.l2.attachmentAnxiety,
+                avoidance: persona.l2.attachmentAvoidance,
+            },
+            narrative: {
+                worldSafe: narrative?.worldSafe ?? 0.6,
+                othersReliable: narrative?.othersReliable ?? 0.5,
+                selfWorth: narrative?.selfWorth ?? 0.6,
+            },
+            stage: persona.l2.relationshipStage,
+            evolving: this.config.personality.enabled !== false,
+            locked: control.locked,
+            seed: control.seed,
+            updatedAt: now,
+        };
+    }
+    /** 手填五维 / 更新锁定项；未传的字段保持原样 */
+    updatePersonality(input) {
+        const store = this.store(input.characterId);
+        if (input.bigFive && typeof input.bigFive === 'object') {
+            applyBigFiveSetup(store, input.bigFive, input.now);
+        }
+        if (input.locked !== undefined || input.seed !== undefined) {
+            const current = loadPersonalityControl(this.dataRoot);
+            savePersonalityControl(this.dataRoot, {
+                locked: input.locked !== undefined ? input.locked : current.locked,
+                seed: input.seed !== undefined ? input.seed : current.seed,
+            });
+        }
+        return this.personalitySnapshot(input.characterId, input.now);
+    }
+    /** 重抽初始人格：未指定种子时用新的随机数，并把种子记下来便于复现 */
+    rerollPersonality(input) {
+        const store = this.store(input.characterId);
+        const seed = typeof input.seed === 'number' && Number.isFinite(input.seed)
+            ? Math.trunc(input.seed) >>> 0
+            : Math.floor(Math.random() * 0x7fffffff);
+        rerollInitialPersonality(store, this.config, seed, input.now);
+        const current = loadPersonalityControl(this.dataRoot);
+        savePersonalityControl(this.dataRoot, { locked: current.locked, seed });
+        this.logger.info('dsh-daughter: 初始人格已重抽', { characterId: input.characterId, seed });
+        return this.personalitySnapshot(input.characterId, input.now);
+    }
+    /** 「画像」页：她眼里的自己、主人、其他人，以及稳定下来的喜恶 */
+    portraits(characterId, now) {
+        const store = this.store(characterId);
+        this.adoptStoredName(store);
+        const persona = store.loadPersona();
+        const card = loadPersonaCard(this.dataRoot);
+        const narrative = persona.l3.narrative;
+        const profiles = buildPersonProfiles(store, now);
+        const toPortrait = (profile) => ({
+            name: profile.name,
+            eventCount: profile.eventCount,
+            intimacy: profile.intimacy,
+            relationship: profile.relationship,
+            trend: profile.trend,
+            firstMet: profile.firstMet,
+            lastAt: profile.lastAt,
+        });
+        const user = profiles.find((profile) => !profile.self && profile.name === 'user');
+        const others = profiles
+            .filter((profile) => !profile.self && profile.name !== 'user')
+            .sort((a, b) => b.intimacy - a.intimacy)
+            .slice(0, 12);
+        const things = buildThingProfiles(store, now).filter((thing) => thing.eventCount >= 2);
+        const events = store.listAllEvents();
+        return {
+            self: {
+                name: card.name,
+                selfRef: card.self_ref,
+                userRef: card.user_ref,
+                background: card.background,
+                voice: card.voice,
+                taboos: card.taboos,
+                temperament: persona.l1.temperament,
+                attachment: {
+                    anxiety: persona.l2.attachmentAnxiety,
+                    avoidance: persona.l2.attachmentAvoidance,
+                },
+                narrative: {
+                    worldSafe: narrative?.worldSafe ?? 0.6,
+                    othersReliable: narrative?.othersReliable ?? 0.5,
+                    selfWorth: narrative?.selfWorth ?? 0.6,
+                },
+                stage: persona.l2.relationshipStage,
+                intimacy: user ? user.intimacy : null,
+            },
+            user: user ? toPortrait(user) : null,
+            others: others.map(toPortrait),
+            things: {
+                likes: things
+                    .filter((thing) => thing.preference >= 0.15)
+                    .sort((a, b) => b.preference - a.preference)
+                    .slice(0, 5)
+                    .map((thing) => ({ label: thing.label, preference: thing.preference, mood: thing.mood })),
+                dislikes: things
+                    .filter((thing) => thing.preference <= -0.15)
+                    .sort((a, b) => a.preference - b.preference)
+                    .slice(0, 5)
+                    .map((thing) => ({ label: thing.label, preference: thing.preference, mood: thing.mood })),
+            },
+            traits: traitWeights(persona.l1.bigFive).map((trait) => ({ label: trait.label, weight: trait.weight })),
+            recentTopics: recentTopicLabels(events, now),
+        };
+    }
+    /**
+     * 角色卡是后加的，之前主人给过的名字只存在对话记忆里。
+     * 这里只补一次，补到就落盘；之后设置页与 prompt 都能直接读到。
+     */
+    adoptStoredName(store) {
+        if (this.nameAdopted)
+            return;
+        this.nameAdopted = true;
+        try {
+            const card = adoptNameFromMemory(this.dataRoot, store.listAllEvents());
+            if (card.name)
+                this.logger.info('dsh-daughter: 角色卡已从记忆补到名字', { name: card.name });
+        }
+        catch (error) {
+            this.logger.warn('dsh-daughter: 从记忆补名字失败', { error: String(error) });
+        }
     }
     /**
      * 接收桌宠上报的生理信号。关闭 body_link 时直接忽略：

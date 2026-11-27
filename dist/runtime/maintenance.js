@@ -439,7 +439,7 @@ export function evolvePersona(store, now, config = defaultConfig) {
     store.setMeta('lastPersonaEvolveTurns', String(turns));
     return changed;
 }
-export function applyPersonaDrift(store, config, persona, polarity, now) {
+export function applyPersonaDrift(store, config, persona, polarity, now, locked = []) {
     const turns = store.getMetaNumber('personaTurns', 0) + 1;
     store.setMeta('personaTurns', String(turns));
     const toneAvg = store.getMetaNumber('toneAvg', 0) * 0.8 + polarity * 0.2;
@@ -457,12 +457,23 @@ export function applyPersonaDrift(store, config, persona, polarity, now) {
         ...before,
         bigFive: {
             ...before.bigFive,
-            neuroticism: clamp01(before.bigFive.neuroticism - delta * 0.6),
-            extraversion: clamp01(before.bigFive.extraversion + delta * 0.3),
-            agreeableness: clamp01(before.bigFive.agreeableness + delta * 0.2),
+            neuroticism: locked.includes('neuroticism')
+                ? before.bigFive.neuroticism
+                : clamp01(before.bigFive.neuroticism - delta * 0.6),
+            extraversion: locked.includes('extraversion')
+                ? before.bigFive.extraversion
+                : clamp01(before.bigFive.extraversion + delta * 0.3),
+            agreeableness: locked.includes('agreeableness')
+                ? before.bigFive.agreeableness
+                : clamp01(before.bigFive.agreeableness + delta * 0.2),
         },
         updatedAt: now,
     };
+    // 三个可动维度全被锁住时不动盘，也不写一条「变了 0」的演化记录
+    const changedDims = ['neuroticism', 'extraversion', 'agreeableness']
+        .some((key) => l1.bigFive[key] !== before.bigFive[key]);
+    if (!changedDims)
+        return { changed: false };
     store.savePersonaLayer('l1', l1);
     const entry = {
         id: store.newEvolutionId(now),
@@ -895,6 +906,29 @@ export function buildPersonProfiles(store, now) {
             self: name === 'self',
         };
     });
+}
+/**
+ * 最近常聊的主题：30 天内出现次数最多的标签。
+ * 只数标签、不读正文，够用来回答「她最近在关心什么」，也不会把私密原话摊到设置页。
+ */
+export function recentTopicLabels(events, now, limit = 6) {
+    const since = Date.parse(now) - 30 * 86_400_000;
+    const counts = new Map();
+    for (const event of events) {
+        if (event.archived)
+            continue;
+        if (!Number.isFinite(Date.parse(event.createdAt)) || Date.parse(event.createdAt) < since)
+            continue;
+        for (const tag of event.tags) {
+            if (!tag)
+                continue;
+            counts.set(tag, (counts.get(tag) ?? 0) + 1);
+        }
+    }
+    return [...counts.entries()]
+        .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+        .slice(0, Math.max(0, limit))
+        .map(([tag]) => tag);
 }
 /** 事物喜好：同一主题在事件里的情绪加权平均，14 天半衰期 */
 export function buildThingProfiles(store, now) {

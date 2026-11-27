@@ -88,6 +88,32 @@
     background: var(--surface-strong); border: 1px solid var(--line); border-radius: 7px; padding: 6px 8px; outline: none;
   }
   input[type=number]:focus { border-color: var(--accent); }
+  input[type=text], textarea {
+    width: 100%; font: inherit; font-size: 12px; line-height: 1.6; color: var(--text);
+    background: var(--surface-strong); border: 1px solid var(--line); border-radius: 7px; padding: 7px 9px; outline: none;
+  }
+  textarea { resize: vertical; min-height: 58px; }
+  input[type=text]:focus, textarea:focus { border-color: var(--accent); }
+  .field { padding: 9px 0; border-top: 1px solid var(--line); }
+  .field:first-of-type { border-top: 0; padding-top: 2px; }
+  .field label { display: block; font-size: 12.5px; margin-bottom: 5px; }
+  .hint { font-size: 11px; color: var(--muted); line-height: 1.6; }
+  .field .hint { margin-top: 4px; }
+  .actions { display: flex; gap: 8px; align-items: center; margin-top: 12px; flex-wrap: wrap; }
+  input[type=range] { width: 150px; accent-color: var(--accent); }
+  .dim { display: flex; align-items: center; gap: 9px; padding: 8px 0; border-top: 1px solid var(--line); }
+  .dim:first-child { border-top: 0; padding-top: 2px; }
+  .dim-name { flex: 0 0 68px; font-size: 12.5px; }
+  .dim-val { width: 34px; text-align: right; font-variant-numeric: tabular-nums; font-size: 12px; color: var(--muted); }
+  .dim-lock { margin-left: auto; display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--muted); white-space: nowrap; }
+  .kv { display: flex; justify-content: space-between; gap: 14px; padding: 7px 0; border-top: 1px solid var(--line); font-size: 12.5px; }
+  .kv:first-child { border-top: 0; padding-top: 2px; }
+  .kv .k { flex: 0 0 auto; color: var(--muted); }
+  .kv .v { text-align: right; line-height: 1.6; }
+  .empty { font-size: 11.5px; color: var(--muted); padding: 4px 0; }
+  .person-block + .person-block { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--line); }
+  #personalityTab, #portraitsTab { display: none; }
+  #personalityTab.active, #portraitsTab.active { display: block; }
   button {
     font: inherit; font-size: 11px; cursor: pointer; color: var(--muted);
     background: var(--surface-strong); border: 1px solid var(--line); border-radius: 7px; padding: 6px 10px;
@@ -97,9 +123,12 @@
   #msg.error { color: var(--danger); }
   #feedbackTab { display: none; }
   #feedbackTab.active { display: block; }
+  #personaTab { display: none; }
+  #personaTab.active { display: block; }
   #settingsTab:not(.active) { display: none; }
   .frame { width: 100%; height: 74vh; min-height: 520px; border: 1px solid var(--line); border-radius: 12px; background: transparent; }
   .note { font-size: 11px; color: var(--muted); line-height: 1.7; margin: 10px 2px 0; }
+  h3 { font-size: 12.5px; font-weight: 600; margin: 14px 0 2px; padding-top: 12px; border-top: 1px solid var(--line); }
 </style>
 </head>
 <body>
@@ -113,6 +142,9 @@
       </header>
       <div class="tabs">
         <button id="tabSettings" class="active" type="button">功能开关</button>
+        <button id="tabPersona" type="button">她是谁</button>
+        <button id="tabPersonality" type="button">人格</button>
+        <button id="tabPortraits" type="button">画像</button>
         <button id="tabFeedback" type="button">意见反馈</button>
       </div>
     </div>
@@ -122,6 +154,92 @@
     <div id="cards">读取设置中…</div>
     <p id="msg"></p>
     <p class="note">鼠标悬停在任意设置项上可查看说明与配置路径。改动会写入覆盖文件并尽量即时生效，个别运行时开关需要重启宿主。点「恢复默认」回到 config.yaml 的基线。</p>
+  </div>
+
+  <div id="personaTab">
+    <div class="card">
+      <h2>她是谁 <small>记忆自动读取 · 可微调</small></h2>
+      <div id="personaAuto"><div class="empty">读取中…</div></div>
+      <h3>你可以微调</h3>
+      <div class="field">
+        <label for="pName">名字</label>
+        <input id="pName" type="text" maxlength="24" placeholder="例如：小满">
+      </div>
+      <div class="field">
+        <label for="pSelf">她怎么自称</label>
+        <input id="pSelf" type="text" maxlength="16" placeholder="例如：我 / 本小姐">
+      </div>
+      <div class="field">
+        <label for="pUser">她怎么称呼你</label>
+        <input id="pUser" type="text" maxlength="16" placeholder="例如：主人 / 你 / 哥">
+      </div>
+      <div class="field">
+        <label for="pBackground">一句话背景</label>
+        <textarea id="pBackground" maxlength="160" placeholder="她是谁、从哪来、和你什么关系。例如：三年前在旧书店门口捡回来的，现在赖着不走。"></textarea>
+        <div class="hint">写具体一点比写形容词有用：「怕打雷」比「有点胆小」更能让她像个人。</div>
+      </div>
+      <div class="field">
+        <label for="pVoice">说话风格</label>
+        <textarea id="pVoice" maxlength="160" placeholder="例如：句子短，少用感叹号，紧张时会重复对方的最后一个词。"></textarea>
+      </div>
+      <div class="field">
+        <label for="pTaboos">绝不主动提起</label>
+        <input id="pTaboos" type="text" placeholder="用顿号或逗号分开，例如：工作、体检、前任">
+        <div class="hint">最多 6 项。这里只约束她「不主动提」，不是删掉相关记忆。</div>
+      </div>
+      <div class="actions">
+        <button id="personaSave" type="button">保存设定</button>
+        <button id="personaClear" type="button">清空</button>
+        <span class="hint" id="personaMsg"></span>
+      </div>
+      <p class="note">上面按最新记忆自动整理，方便你快速了解她；下面留空就用记忆里的值，手写部分会放在人格注入最前面，不参与演化。她的人格五维、依恋与演化证据在「脑星图 → 人格参数」里看。人格块预算有限，每项写一句就够。</p>
+    </div>
+  </div>
+
+  <div id="personalityTab">
+    <div class="card">
+      <h2>人格演化</h2>
+      <div class="row">
+        <div class="info">
+          <div class="name">允许她的人格随经历改变</div>
+          <div class="tooltip">关闭后五维、依恋与自我叙事都不再被经历推动；记忆、关系、情绪与技能不受影响。默认开启。</div>
+        </div>
+        <div class="ctrl"><input id="evoToggle" type="checkbox"></div>
+      </div>
+      <p class="note">锁定某一维后，它会被排除在演化之外；没锁的维度仍按原来的步长与漂移上限变化。</p>
+    </div>
+
+    <div class="card">
+      <h2>五维人格 <small>出生锚点 → 当前</small></h2>
+      <div id="bigFiveRows"></div>
+      <div class="actions">
+        <button id="bigFiveSave" type="button">保存五维</button>
+        <span class="hint" id="personalityMsg"></span>
+      </div>
+      <p class="note">保存会把这一维的出生锚点一起改写——只改当前值不动锚点，下次演化会立刻被夹回去。</p>
+    </div>
+
+    <div class="card">
+      <h2>依恋与自我叙事</h2>
+      <div id="layerRows"></div>
+      <p class="note">这里只展示数值，不翻译成「她是 X 型」；锁上后对应的一组数值不再随经历移动。</p>
+    </div>
+
+    <div class="card">
+      <h2>重新抽取</h2>
+      <p class="note">重抽会换一组新的五维与依恋底色；记忆、技能、关系进度和日常情绪都保留。</p>
+      <div class="actions">
+        <button id="rerollButton" type="button">重新抽取初始人格</button>
+        <span class="hint" id="seedNote"></span>
+      </div>
+    </div>
+  </div>
+
+  <div id="portraitsTab">
+    <div class="card"><h2>她眼里的自己</h2><div id="selfPortrait"></div></div>
+    <div class="card"><h2>她眼里的你</h2><div id="userPortrait"></div></div>
+    <div class="card"><h2>她眼里的其他人</h2><div id="otherPortraits"></div></div>
+    <div class="card"><h2>她喜欢 / 不喜欢的事物</h2><div id="thingPortraits"></div></div>
   </div>
 
   <div id="feedbackTab">
@@ -214,18 +332,287 @@
     }
   }
 
-  $('tabSettings').addEventListener('click', () => {
-    $('tabSettings').classList.add('active');
-    $('tabFeedback').classList.remove('active');
-    $('settingsTab').classList.add('active');
-    $('feedbackTab').classList.remove('active');
+  /* 角色卡：读写 settings/persona.json，空卡不注入 */
+  function personaMessage(text, error = false) {
+    $('personaMsg').textContent = text;
+    $('personaMsg').style.color = error ? 'var(--danger)' : 'var(--muted)';
+  }
+
+  /** 自动整理：把记忆与人格压成几行，用户不用翻星图就能知道她现在什么样 */
+  function renderPersonaAuto(data) {
+    const self = data.self || {};
+    const user = data.user || null;
+    const things = data.things || {};
+    const traits = (data.traits || []).map((item) => `${item.label} ${num(item.weight, 0).toFixed(2)}`).join('、');
+    const topics = (data.recentTopics || []).join('、');
+    const likes = (things.likes || []).map((item) => item.label).join('、');
+    const dislikes = (things.dislikes || []).map((item) => item.label).join('、');
+    const others = (data.others || []).map((item) => item.name).slice(0, 5).join('、');
+    const relation = user
+      ? `${STAGE_WORDS[user.relationship] || user.relationship} · 亲密度 ${pct(user.intimacy)} · ${user.trend}`
+      : '还没有共同经历';
+    $('personaAuto').innerHTML = [
+      kv('她是谁', `${self.name || '还没起名'}${self.temperament ? ` · ${TEMPERAMENT_WORDS[self.temperament] || self.temperament}` : ''}`),
+      kv('性格', traits || '还没有稳定特征'),
+      kv('和你的关系', relation),
+      kv('一起经历过', user ? `${user.eventCount} 条记忆` : '还没有'),
+      kv('最近常聊', topics || '还没形成固定话题'),
+      kv('喜欢', likes || '还没有'),
+      kv('不喜欢', dislikes || '还没有'),
+      kv('重要的人', others || '还没有出现过其他人'),
+    ].join('');
+  }
+
+  async function loadPersona() {
+    try {
+      const data = await api('/daughter-settings/api/persona');
+      const card = data.card || {};
+      $('pName').value = card.name || '';
+      $('pSelf').value = card.self_ref || '';
+      $('pUser').value = card.user_ref || '';
+      $('pBackground').value = card.background || '';
+      $('pVoice').value = card.voice || '';
+      $('pTaboos').value = (card.taboos || []).join('、');
+    } catch (error) {
+      personaMessage(`读取失败：${error.message}`, true);
+    }
+    try {
+      renderPersonaAuto(await api('/daughter-settings/api/portraits'));
+    } catch (error) {
+      $('personaAuto').innerHTML = `<div class="empty">自动整理读取失败：${error.message}</div>`;
+    }
+  }
+
+  async function savePersona() {
+    const card = {
+      name: $('pName').value,
+      self_ref: $('pSelf').value,
+      user_ref: $('pUser').value,
+      background: $('pBackground').value,
+      voice: $('pVoice').value,
+      taboos: $('pTaboos').value,
+    };
+    try {
+      await api('/daughter-settings/api/persona', {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ card }),
+      });
+      personaMessage('角色卡已保存，下一轮对话开始生效。');
+    } catch (error) {
+      personaMessage(`保存失败：${error.message}`, true);
+      return;
+    }
+    await loadPersona();
+  }
+
+  $('personaSave').addEventListener('click', savePersona);
+  $('personaClear').addEventListener('click', async () => {
+    ['pName', 'pSelf', 'pUser', 'pBackground', 'pVoice', 'pTaboos'].forEach((id) => { $(id).value = ''; });
+    await savePersona();
   });
-  $('tabFeedback').addEventListener('click', () => {
-    $('tabFeedback').classList.add('active');
-    $('tabSettings').classList.remove('active');
-    $('feedbackTab').classList.add('active');
-    $('settingsTab').classList.remove('active');
+
+  /* 人格：五维手填、逐项锁定、演化总开关与重抽 */
+  const DIM_LABELS = {
+    openness: '开放性',
+    conscientiousness: '尽责性',
+    extraversion: '外向性',
+    agreeableness: '宜人性',
+    neuroticism: '神经质',
+  };
+
+  function num(value, fallback) {
+    return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+  }
+
+  function personalityMessage(text, error = false) {
+    $('personalityMsg').textContent = text;
+    $('personalityMsg').style.color = error ? 'var(--danger)' : 'var(--muted)';
+  }
+
+  function renderBigFive(snapshot) {
+    $('bigFiveRows').innerHTML = Object.entries(DIM_LABELS).map(([key, label]) => {
+      const current = num(snapshot.bigFive[key], 0.5);
+      const innate = num(snapshot.innate[key], current);
+      const locked = snapshot.locked.includes(key);
+      return `<div class="dim">
+        <div class="dim-name">${label}</div>
+        <input type="range" min="0" max="1" step="0.01" data-dim="${key}" value="${current}">
+        <span class="dim-val" data-val="${key}">${current.toFixed(2)}</span>
+        <span class="hint">锚 ${innate.toFixed(2)}</span>
+        <label class="dim-lock"><input type="checkbox" data-lock="${key}" ${locked ? 'checked' : ''}>锁定</label>
+      </div>`;
+    }).join('');
+    document.querySelectorAll('input[data-dim]').forEach((input) => {
+      input.addEventListener('input', () => {
+        const label = document.querySelector(`[data-val="${input.dataset.dim}"]`);
+        if (label) label.textContent = Number(input.value).toFixed(2);
+      });
+    });
+  }
+
+  function renderLayers(snapshot) {
+    const narrative = snapshot.narrative || {};
+    const attachment = snapshot.attachment || {};
+    const locked = snapshot.locked;
+    $('layerRows').innerHTML = `
+      <div class="dim">
+        <div class="dim-name">依恋</div>
+        <span class="hint">焦虑 ${num(attachment.anxiety, 0).toFixed(2)} · 回避 ${num(attachment.avoidance, 0).toFixed(2)}</span>
+        <label class="dim-lock"><input type="checkbox" data-lock-group="attachment" ${locked.includes('attachment') ? 'checked' : ''}>锁定</label>
+      </div>
+      <div class="dim">
+        <div class="dim-name">自我叙事</div>
+        <span class="hint">世界安全 ${num(narrative.worldSafe, 0.6).toFixed(2)} · 他人可靠 ${num(narrative.othersReliable, 0.5).toFixed(2)} · 值得被爱 ${num(narrative.selfWorth, 0.6).toFixed(2)}</span>
+        <label class="dim-lock"><input type="checkbox" data-lock-group="narrative" ${locked.includes('narrative') ? 'checked' : ''}>锁定</label>
+      </div>`;
+  }
+
+  async function loadPersonality() {
+    try {
+      const [snapshot, configData] = await Promise.all([
+        api('/daughter-settings/api/personality'),
+        api('/daughter-settings/api/config'),
+      ]);
+      renderBigFive(snapshot);
+      renderLayers(snapshot);
+      const field = (configData.fields || []).find((item) => item.path === 'personality.enabled');
+      $('evoToggle').checked = field ? field.value !== false : snapshot.evolving;
+      $('seedNote').textContent = snapshot.seed === null ? '当前用出生种子' : `上次重抽 seed ${snapshot.seed}`;
+    } catch (error) {
+      $('bigFiveRows').innerHTML = `<div class="empty">人格读取失败：${error.message}</div>`;
+    }
+  }
+
+  async function savePersonality() {
+    const bigFive = {};
+    document.querySelectorAll('input[data-dim]').forEach((input) => {
+      bigFive[input.dataset.dim] = Number(input.value);
+    });
+    const locked = [...document.querySelectorAll('input[data-lock]:checked, input[data-lock-group]:checked')]
+      .map((input) => input.dataset.lock || input.dataset.lockGroup);
+    try {
+      const snapshot = await api('/daughter-settings/api/personality', {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ bigFive, locked }),
+      });
+      renderBigFive(snapshot);
+      renderLayers(snapshot);
+      personalityMessage('已保存；下一轮对话开始按新的人格运行。');
+    } catch (error) {
+      personalityMessage(`保存失败：${error.message}`, true);
+    }
+  }
+
+  $('bigFiveSave').addEventListener('click', savePersonality);
+  $('evoToggle').addEventListener('change', async () => {
+    const enabled = $('evoToggle').checked;
+    try {
+      await api('/daughter-settings/api/config', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ path: 'personality.enabled', value: enabled }),
+      });
+      personalityMessage(enabled ? '已开启人格演化。' : '已锁定人格：五维、依恋与自我叙事不再随经历改变。');
+    } catch (error) {
+      personalityMessage(`保存失败：${error.message}`, true);
+    }
   });
+  $('rerollButton').addEventListener('click', async () => {
+    if (!confirm('重抽会覆盖当前五维与依恋底色，记忆、技能和关系进度保留。继续吗？')) return;
+    try {
+      const snapshot = await api('/daughter-settings/api/personality/reroll', {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}',
+      });
+      renderBigFive(snapshot);
+      renderLayers(snapshot);
+      $('seedNote').textContent = `已重抽：seed ${snapshot.seed}`;
+      personalityMessage('初始人格已重抽。');
+    } catch (error) {
+      personalityMessage(`重抽失败：${error.message}`, true);
+    }
+  });
+
+  /* 画像：自我 / 用户 / 他人 / 事物偏好，只读 */
+  const TEMPERAMENT_WORDS = { slow_warmup: '慢热', eager: '急切', steady: '稳定', guarded: '戒备' };
+  const STAGE_WORDS = {
+    stranger: '陌生', acquaintance: '初识', familiar: '熟悉', close: '亲近', dependent: '依赖',
+  };
+
+  function kv(key, value) {
+    return `<div class="kv"><span class="k">${key}</span><span class="v">${value}</span></div>`;
+  }
+
+  function pct(value) {
+    return `${Math.round(num(value, 0) * 100)}%`;
+  }
+
+  function personBlock(person) {
+    return `<div class="person-block">
+      ${kv('名字', person.name)}
+      ${kv('关系', `${person.relationship} · 亲密度 ${pct(person.intimacy)}`)}
+      ${kv('趋势', person.trend)}
+      ${kv('互动', `${person.eventCount} 次`)}
+      ${kv('最近一次', person.lastAt ? String(person.lastAt).slice(0, 16).replace('T', ' ') : '—')}
+    </div>`;
+  }
+
+  async function loadPortraits() {
+    try {
+      const data = await api('/daughter-settings/api/portraits');
+      const self = data.self || {};
+      const narrative = self.narrative || {};
+      const attachment = self.attachment || {};
+      $('selfPortrait').innerHTML = [
+        kv('名字', self.name || '还没起名'),
+        kv('背景', self.background || '还没写'),
+        kv('说话风格', self.voice || '还没写'),
+        kv('气质', TEMPERAMENT_WORDS[self.temperament] || self.temperament || '—'),
+        kv('和你的关系', `${STAGE_WORDS[self.stage] || self.stage || '—'}${self.intimacy === null || self.intimacy === undefined ? '' : ` · 亲密度 ${pct(self.intimacy)}`}`),
+        kv('她眼里的世界', `安全 ${num(narrative.worldSafe, 0.6).toFixed(2)}`),
+        kv('她眼里的人', `可靠 ${num(narrative.othersReliable, 0.5).toFixed(2)}`),
+        kv('她眼里的自己', `值得被爱 ${num(narrative.selfWorth, 0.6).toFixed(2)}`),
+        kv('和人靠近时', `不安 ${num(attachment.anxiety, 0).toFixed(2)} · 想退开 ${num(attachment.avoidance, 0).toFixed(2)}`),
+      ].join('');
+
+      $('userPortrait').innerHTML = data.user
+        ? personBlock(data.user)
+        : '<div class="empty">还没有和你说过话，暂时没有画像。</div>';
+
+      $('otherPortraits').innerHTML = data.others && data.others.length > 0
+        ? data.others.map(personBlock).join('')
+        : '<div class="empty">还没有出现过其他人。</div>';
+
+      const likes = (data.things && data.things.likes) || [];
+      const dislikes = (data.things && data.things.dislikes) || [];
+      $('thingPortraits').innerHTML = likes.length === 0 && dislikes.length === 0
+        ? '<div class="empty">还没有稳定下来的喜恶，再相处一段时间再看。</div>'
+        : [
+          kv('喜欢', likes.length > 0 ? likes.map((item) => `${item.label}（${item.mood}）`).join('、') : '还没有'),
+          kv('不喜欢', dislikes.length > 0 ? dislikes.map((item) => `${item.label}（${item.mood}）`).join('、') : '还没有'),
+        ].join('');
+    } catch (error) {
+      $('selfPortrait').innerHTML = `<div class="empty">画像读取失败：${error.message}</div>`;
+    }
+  }
+
+  const TABS = {
+    settings: ['tabSettings', 'settingsTab'],
+    persona: ['tabPersona', 'personaTab'],
+    personality: ['tabPersonality', 'personalityTab'],
+    portraits: ['tabPortraits', 'portraitsTab'],
+    feedback: ['tabFeedback', 'feedbackTab'],
+  };
+  function selectTab(name) {
+    Object.entries(TABS).forEach(([key, [button, panel]]) => {
+      $(button).classList.toggle('active', key === name);
+      $(panel).classList.toggle('active', key === name);
+    });
+    if (name === 'persona') loadPersona();
+    if (name === 'personality') loadPersonality();
+    if (name === 'portraits') loadPortraits();
+  }
+  $('tabSettings').addEventListener('click', () => selectTab('settings'));
+  $('tabPersona').addEventListener('click', () => selectTab('persona'));
+  $('tabPersonality').addEventListener('click', () => selectTab('personality'));
+  $('tabPortraits').addEventListener('click', () => selectTab('portraits'));
+  $('tabFeedback').addEventListener('click', () => selectTab('feedback'));
 
   load();
 </script>

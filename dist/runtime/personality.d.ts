@@ -10,6 +10,7 @@
  */
 import type { AttachmentType, BigFive, DaughterConfig, ImpactKind, L1Baseline, L2Relationship, L5State, SelfNarrative } from '../types.js';
 import type { Store } from '../store.js';
+import { type PersonalityControl } from './personality-control.js';
 export interface InitialPersonalityInput {
     ranges: Record<keyof BigFive, [number, number]>;
     attachment_priors: {
@@ -29,6 +30,8 @@ export declare const DEFAULT_ATTACHMENT_PRIORS: {
  * 五维先在有界区间内抽样，再按弱相关拉一点 O/E 与 N/A 的关系，避免出现"出生即极端"。
  */
 export declare function createInitialL1(characterId: string, seed: number, initial?: InitialPersonalityInput, now?: string): L1Baseline;
+/** 气质由五维里最外显的两维决定；手填五维后也要按同一口径重算 */
+export declare function temperamentOf(bigFive: BigFive): L1Baseline['temperament'];
 /** 出生依恋：先验决定落点；混乱型不出生 */
 export declare function createInitialL2(characterId: string, seed: number, initial?: InitialPersonalityInput, now?: string): L2Relationship;
 /** 中性自我叙事（旧存档补齐用） */
@@ -67,4 +70,19 @@ export declare function scoreImpact(text: string, l5: L5State, thresholds?: {
  * 把一次对话的冲击落到人格上。
  * 只有 cumulative / critical 会写 L1–L3；回复 routine 直接返回 changed=false。
  */
-export declare function applyPersonalitySignal(store: Store, config: DaughterConfig, input: PersonalitySignalInput): PersonalitySignalResult;
+export declare function applyPersonalitySignal(store: Store, config: DaughterConfig, input: PersonalitySignalInput, control?: PersonalityControl): PersonalitySignalResult;
+/**
+ * 主人手填五维：同时改写出生锚点。
+ * 只改当前值而不动 innate，下一次演化会立刻被 drift_cap 夹回旧锚点，
+ * 等于「填了但没生效」，所以这里把锚点和当前值一起落下去。
+ */
+export declare function applyBigFiveSetup(store: Store, values: Partial<BigFive>, now: string): L1Baseline;
+/**
+ * 重抽初始人格：按新种子重新抽五维与依恋底色。
+ * 保留关系进度、对人情感、记忆与技能——重抽的是「她本来是什么样」，
+ * 不是把处出来的关系一起抹掉。
+ */
+export declare function rerollInitialPersonality(store: Store, config: DaughterConfig, seed: number, now: string): {
+    l1: L1Baseline;
+    l2: L2Relationship;
+};

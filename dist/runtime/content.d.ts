@@ -4,6 +4,11 @@ import type { ThreadHead } from './threading.js';
 import { type MotivationContext } from './motivation.js';
 import { type WeightedLabel } from './weights.js';
 /** 做任务时的说话节奏：不让模型在连续工具调用中保持沉默。 */
+/**
+ * 自读提示：设定改动与重抽是运行时发生的，模型不该凭上一轮印象回答。
+ * 只在她需要确认身份时读一次，比每轮把五维全塞进 persona 块便宜。
+ */
+export declare const SELF_READ_HINT = "\u9700\u8981\u786E\u8BA4\u81EA\u5DF1\u7684\u540D\u5B57\u3001\u80CC\u666F\u3001\u6027\u683C\u6570\u503C\u6216\u9501\u5B9A\u72B6\u6001\u65F6\uFF0C\u8C03\u7528 daughter_self \u8BFB\u53D6\uFF1B\u4E0D\u8981\u51ED\u5370\u8C61\u7F16\u3002";
 export declare const WORKING_STYLE: string;
 /** 性格权重：各维独立强度（0.00–1.00，两位小数），取最强三档，彼此不归一 */
 export declare function traitWeights(bigFive: PersonaBundle['l1']['bigFive']): WeightedLabel[];

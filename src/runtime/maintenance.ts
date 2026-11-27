@@ -511,6 +511,7 @@ export function applyPersonaDrift(
   persona: PersonaBundle,
   polarity: number,
   now: string,
+  locked: readonly string[] = [],
 ): { changed: boolean; evolutionId?: string } {
   const turns = store.getMetaNumber('personaTurns', 0) + 1;
   store.setMeta('personaTurns', String(turns));
@@ -532,12 +533,23 @@ export function applyPersonaDrift(
     ...before,
     bigFive: {
       ...before.bigFive,
-      neuroticism: clamp01(before.bigFive.neuroticism - delta * 0.6),
-      extraversion: clamp01(before.bigFive.extraversion + delta * 0.3),
-      agreeableness: clamp01(before.bigFive.agreeableness + delta * 0.2),
+      neuroticism: locked.includes('neuroticism')
+        ? before.bigFive.neuroticism
+        : clamp01(before.bigFive.neuroticism - delta * 0.6),
+      extraversion: locked.includes('extraversion')
+        ? before.bigFive.extraversion
+        : clamp01(before.bigFive.extraversion + delta * 0.3),
+      agreeableness: locked.includes('agreeableness')
+        ? before.bigFive.agreeableness
+        : clamp01(before.bigFive.agreeableness + delta * 0.2),
     },
     updatedAt: now,
   };
+
+  // 三个可动维度全被锁住时不动盘，也不写一条「变了 0」的演化记录
+  const changedDims = (['neuroticism', 'extraversion', 'agreeableness'] as const)
+    .some((key) => l1.bigFive[key] !== before.bigFive[key]);
+  if (!changedDims) return { changed: false };
 
   store.savePersonaLayer('l1', l1);
 
@@ -1038,6 +1050,31 @@ export function buildPersonProfiles(store: Store, now: string): PersonProfile[] 
       self: name === 'self',
     };
   });
+}
+
+/**
+ * 最近常聊的主题：30 天内出现次数最多的标签。
+ * 只数标签、不读正文，够用来回答「她最近在关心什么」，也不会把私密原话摊到设置页。
+ */
+export function recentTopicLabels(
+  events: Array<{ tags: string[]; createdAt: string; archived: boolean }>,
+  now: string,
+  limit = 6,
+): string[] {
+  const since = Date.parse(now) - 30 * 86_400_000;
+  const counts = new Map<string, number>();
+  for (const event of events) {
+    if (event.archived) continue;
+    if (!Number.isFinite(Date.parse(event.createdAt)) || Date.parse(event.createdAt) < since) continue;
+    for (const tag of event.tags) {
+      if (!tag) continue;
+      counts.set(tag, (counts.get(tag) ?? 0) + 1);
+    }
+  }
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .slice(0, Math.max(0, limit))
+    .map(([tag]) => tag);
 }
 
 export interface ThingProfile {

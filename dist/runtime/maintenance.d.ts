@@ -32,7 +32,7 @@ export declare function runTick(store: Store, config: DaughterConfig, now: strin
  */
 export declare function relaxL5(store: Store, config: DaughterConfig, now: string): number;
 export declare function evolvePersona(store: Store, now: string, config?: DaughterConfig): string[];
-export declare function applyPersonaDrift(store: Store, config: DaughterConfig, persona: PersonaBundle, polarity: number, now: string): {
+export declare function applyPersonaDrift(store: Store, config: DaughterConfig, persona: PersonaBundle, polarity: number, now: string, locked?: readonly string[]): {
     changed: boolean;
     evolutionId?: string;
 };
@@ -114,6 +114,15 @@ export interface PersonProfile {
  * 亲密度按事件权重累加并做 14 天半衰期；趋势对比最近 7 天与此前 7 天。
  */
 export declare function buildPersonProfiles(store: Store, now: string): PersonProfile[];
+/**
+ * 最近常聊的主题：30 天内出现次数最多的标签。
+ * 只数标签、不读正文，够用来回答「她最近在关心什么」，也不会把私密原话摊到设置页。
+ */
+export declare function recentTopicLabels(events: Array<{
+    tags: string[];
+    createdAt: string;
+    archived: boolean;
+}>, now: string, limit?: number): string[];
 export interface ThingProfile {
     label: string;
     eventCount: number;
