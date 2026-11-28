@@ -4,6 +4,20 @@
 
 > **更新公告（2026-11-21）**：当前版本 **0.8.2**。0.8.0 的意见反馈在你本机报 `fetch failed`，0.8.1 修了 TLS 但提交步骤仍啰嗦，连着让你更新、重启，抱歉。0.8.2 把流程收成「填完点一次提交」，待发条目自动补发。详见 [Release 公告与致歉](https://github.com/han0han0le0ni/dsh-daughter/releases/tag/v0.8.2)。
 
+## 界面
+
+**脑图 · 九星系：L1/L2 与情绪、关系维度同屏**
+
+![截图](docs/screenshots/starmap.jpg)
+
+**daughter 设置：上限、衰减、联想、情绪半衰期全部可调**
+
+![截图](docs/screenshots/settings.jpg)
+
+**记忆衰减：权重变化与「该记住什么」逐条可查**
+
+![截图](docs/screenshots/decay.jpg)
+
 ## 先说清楚：这是怎么做出来的
 
 - **想法是我的，代码是 AI 的**：人格分层、记忆联想、动机双通路、欲言又止、桌宠联动——这些设计都是我一句一句提给 AI，由 AI 写成 TypeScript / C# 代码的。
